@@ -138,7 +138,7 @@ if signals.empty or len(signals) < 150:
     st.stop()
 
 # =========================================================
-# BTC STRESS (FULLY GUARDED)
+# BTC STRESS (BULLETPROOF SCALAR EXTRACTION)
 # =========================================================
 
 btc = load_btc()
@@ -146,8 +146,16 @@ btc_stress = compute_btc_stress(btc)
 
 btc_aligned = btc_stress.reindex(signals.index)
 
-btc_latest = btc_aligned.iloc[-1]
-btc_latest = float(btc_latest) if pd.notna(btc_latest) else 0.0
+if len(btc_aligned) == 0:
+    btc_latest = 0.0
+else:
+    btc_latest = btc_aligned.iloc[-1]
+
+    # Force scalar extraction
+    if isinstance(btc_latest, (pd.Series, np.ndarray)):
+        btc_latest = btc_latest.squeeze()
+
+    btc_latest = float(btc_latest) if not pd.isna(btc_latest) else 0.0
 
 # =========================================================
 # CURRENT REGIME
