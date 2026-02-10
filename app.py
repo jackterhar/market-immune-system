@@ -5,6 +5,15 @@ import yfinance as yf
 import matplotlib.pyplot as plt
 from datetime import datetime
 
+import json
+import requests
+from pathlib import Path
+
+def send_alert(message):
+    WEBHOOK_URL = st.secrets.get("ALERT_WEBHOOK", None)
+    if WEBHOOK_URL:
+        requests.post(WEBHOOK_URL, json={"text": message})
+
 st.set_page_config(layout="wide", page_title="Market Immune System v4")
 
 # =========================================================
@@ -48,6 +57,22 @@ def build_cap_weighted_index(price_df, caps):
     weighted = price_df.mul(weights, axis=1)
     index = weighted.sum(axis=1)
     return index, weights
+
+# =========================================================
+# STATE & ALERTS
+# =========================================================
+
+STATE_FILE = Path("state.json")
+
+def load_previous_state():
+    if STATE_FILE.exists():
+        with open(STATE_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+def save_state(state):
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f)
 
 # =========================================================
 # SIGNAL ENGINE
@@ -103,6 +128,25 @@ def classify_regime(latest):
         regime = "🔴 RISK-OFF"
 
     return regime, confidence, signal_flags
+
+prev_state = load_previous_state()
+prev_regime = prev_state.get("regime")
+
+if prev_regime and prev_regime != regime:
+    alert_msg = (
+        f"🚨 Market Regime Change\n"
+        f"From: {prev_regime}\n"
+        f"To: {regime}\n"
+        f"Confidence: {confidence:.2f}\n"
+        f"Date: {signals.index[-1].date()}"
+    )
+    send_alert(alert_msg)
+
+save_state({
+    "regime": regime,
+    "confidence": confidence,
+    "date": str(signals.index[-1].date())
+})
 
 # =========================================================
 # LOAD DATA
