@@ -47,6 +47,17 @@ def load_prices(tickers):
     )["Close"]
     return df.dropna()
 
+@st.cache_data(ttl=3600)
+def load_btc():
+    btc = yf.download(
+        "BTC-USD",
+        start=START_DATE,
+        interval="1d",
+        auto_adjust=True,
+        progress=False
+    )["Close"]
+    return btc.dropna()
+
 # =========================================================
 # CAP-WEIGHTED AI / SEMIS INDEX
 # =========================================================
@@ -107,11 +118,33 @@ def compute_signals(spx, ai_index):
 
     return df, signals.dropna()
 
+def compute_btc_stress(btc):
+    mcap_growth = btc.pct_change(30)
+    rcap_proxy = btc.rolling(180).mean()
+    rcap_growth = rcap_proxy.pct_change(30)
+
+    stress = mcap_growth - rcap_growth
+    stress_z = zscore(stress, 90)
+    return stress_z
+
 # =========================================================
 # REGIME LOGIC
 # =========================================================
 
 def classify_regime(latest):
+    btc = load_btc()
+btc_stress = compute_btc_stress(btc)
+
+btc_latest = btc_stress.loc[signals.index[-1]]
+btc_penalty = 0
+
+if btc_latest > 1:
+    btc_penalty = 0.15
+elif btc_latest < -1:
+    btc_penalty = -0.10
+
+adjusted_confidence = max(0, min(1, confidence - btc_penalty))
+confidence = adjusted_confidence
     signal_flags = {
         "rs": latest["RS_Z"] > 0,
         "vol": latest["VOL_Z"] < 0,
