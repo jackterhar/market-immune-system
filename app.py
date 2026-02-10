@@ -11,10 +11,10 @@ from pathlib import Path
 # APP CONFIG
 # =========================================================
 
-st.set_page_config(layout="wide", page_title="Market Immune System v6")
+st.set_page_config(layout="wide", page_title="Market Immune System v7")
 
 SPX_TICKER = "^GSPC"
-START_DATE = "2023-01-01"
+START_DATE = "2022-01-01"
 
 AI_SEMI_TICKERS = {
     "NVDA": 2.20e12,
@@ -28,7 +28,7 @@ STATE_FILE = Path("state.json")
 HISTORY_FILE = Path("regime_history.csv")
 
 # =========================================================
-# DATA LOADERS (SAFE ENDPOINTS ONLY)
+# DATA LOADERS
 # =========================================================
 
 @st.cache_data(ttl=3600)
@@ -54,7 +54,7 @@ def load_btc():
     return btc.dropna()
 
 # =========================================================
-# SIGNAL ENGINE
+# UTILITIES
 # =========================================================
 
 def zscore(series, window):
@@ -65,6 +65,10 @@ def build_cap_weighted_index(price_df, caps):
     weights = caps / caps.sum()
     index = price_df.mul(weights, axis=1).sum(axis=1)
     return index, weights
+
+# =========================================================
+# SIGNAL ENGINE
+# =========================================================
 
 def compute_signals(spx, ai_index):
     rs = ai_index / spx
@@ -83,39 +87,33 @@ def compute_btc_stress(btc):
     mcap_growth = btc.pct_change(30)
     rcap_proxy = btc.rolling(180).mean()
     rcap_growth = rcap_proxy.pct_change(30)
-
     stress = mcap_growth - rcap_growth
-    stress_z = zscore(stress, 90)
-
-    return stress_z.dropna()
+    return zscore(stress, 90).dropna()
 
 # =========================================================
 # REGIME LOGIC
 # =========================================================
 
-def classify_regime(latest):
-    signal_flags = {
-        "rs": latest["RS_Z"] > 0,
-        "vol": latest["VOL_Z"] < 0,
-        "trend": latest["TREND_Z"] > 0,
+def classify_regime(row):
+    flags = {
+        "rs": row["RS_Z"] > 0,
+        "vol": row["VOL_Z"] < 0,
+        "trend": row["TREND_Z"] > 0,
     }
-
-    confidence = sum(signal_flags.values()) / len(signal_flags)
+    confidence = sum(flags.values()) / len(flags)
 
     if confidence >= 0.67:
-        regime = "🟢 RISK-ON"
+        return "🟢 RISK-ON", confidence
     elif confidence >= 0.40:
-        regime = "🟡 CAUTION"
+        return "🟡 CAUTION", confidence
     else:
-        regime = "🔴 RISK-OFF"
-
-    return regime, confidence, signal_flags
+        return "🔴 RISK-OFF", confidence
 
 # =========================================================
-# STATE / HISTORY / ALERTS
+# STATE / HISTORY
 # =========================================================
 
-def load_previous_state():
+def load_state():
     if STATE_FILE.exists():
         return json.loads(STATE_FILE.read_text())
     return {}
@@ -135,11 +133,6 @@ def update_history(row):
     hist.to_csv(HISTORY_FILE, index=False)
     return hist
 
-def send_alert(message):
-    webhook = st.secrets.get("ALERT_WEBHOOK", None)
-    if webhook:
-        requests.post(webhook, json={"text": message})
-
 # =========================================================
 # LOAD DATA
 # =========================================================
@@ -152,18 +145,12 @@ ai_index, weights = build_cap_weighted_index(ai_prices, AI_SEMI_TICKERS)
 signals = compute_signals(spx, ai_index)
 
 # =========================================================
-# 🔒 DATA READINESS GUARD (FIXES YOUR ERROR)
+# DATA GUARD (CRITICAL)
 # =========================================================
 
-if signals.empty:
-    st.warning(
-        "Not enough historical data yet to compute signals. "
-        "Waiting for sufficient lookback window."
-    )
+if signals.empty or len(signals) < 120:
+    st.warning("Insufficient historical data to compute stable regimes.")
     st.stop()
-
-latest = signals.iloc[-1]
-regime, confidence, flags = classify_regime(latest)
 
 # =========================================================
 # BTC MODIFIER
@@ -171,18 +158,40 @@ regime, confidence, flags = classify_regime(latest)
 
 btc = load_btc()
 btc_stress = compute_btc_stress(btc)
-btc_latest = btc_stress.loc[signals.index[-1]]
-
-btc_penalty = 0
-if btc_latest > 1:
-    btc_penalty = 0.15
-elif btc_latest < -1:
-    btc_penalty = -0.10
-
-confidence = max(0, min(1, confidence - btc_penalty))
+btc_latest = btc_stress.reindex(signals.index).iloc[-1]
 
 # =========================================================
-# HISTORY + ALERTS
+# CURRENT REGIME
+# =========================================================
+
+latest = signals.iloc[-1]
+regime, confidence = classify_regime(latest)
+
+if btc_latest > 1:
+    confidence -= 0.15
+elif btc_latest < -1:
+    confidence += 0.10
+
+confidence = float(np.clip(confidence, 0, 1))
+
+# =========================================================
+# FORWARD RETURNS (V7 CORE)
+# =========================================================
+
+forward_returns = pd.DataFrame({
+    "fwd_5d": spx.pct_change(5).shift(-5),
+    "fwd_20d": spx.pct_change(20).shift(-20),
+    "fwd_60d": spx.pct_change(60).shift(-60),
+})
+
+signal_hist = signals.join(forward_returns).dropna()
+
+def regime_forward_stats(label):
+    subset = signal_hist[signal_hist["regime"] == label]
+    return subset[["fwd_5d", "fwd_20d", "fwd_60d"]].mean()
+
+# =========================================================
+# BUILD HISTORY ROW
 # =========================================================
 
 row = {
@@ -190,84 +199,83 @@ row = {
     "regime": regime,
     "confidence": confidence,
     "btc_stress": btc_latest,
-    "rs_z": latest["RS_Z"],
-    "vol_z": latest["VOL_Z"],
-    "trend_z": latest["TREND_Z"],
 }
 
 history = update_history(row)
 
-prev_state = load_previous_state()
-if prev_state.get("regime") and prev_state["regime"] != regime:
-    send_alert(
-        f"🚨 Market Regime Change\n"
-        f"{prev_state['regime']} → {regime}\n"
-        f"Confidence: {confidence:.2f}\n"
-        f"Date: {row['date']}"
-    )
-
-save_state({"regime": regime, "date": str(row["date"])})
-
 # =========================================================
-# V6 ANALYTICS
+# ADD REGIME COLUMN TO SIGNAL HISTORY
 # =========================================================
 
-history["drawdown_risk"] = (
-    (history["regime"] == "🔴 RISK-OFF").astype(int)
-    * (1 - history["confidence"])
+signal_hist["regime"] = signal_hist.apply(
+    lambda r: classify_regime(r)[0], axis=1
 )
 
-regime_duration = (
-    history.iloc[::-1]["regime"]
-    .ne(history.iloc[::-1]["regime"].shift())
-    .cumsum()
-    .value_counts()
-    .iloc[0]
+# =========================================================
+# HIT RATE VALIDATION
+# =========================================================
+
+drawdown = spx.pct_change(20).shift(-20) < -0.07
+signal_hist["drawdown"] = drawdown
+
+hit_rate = (
+    signal_hist[signal_hist["regime"] == "🔴 RISK-OFF"]["drawdown"].mean()
 )
 
-drawdown_prob = history["drawdown_risk"].rolling(60).mean().iloc[-1]
+# =========================================================
+# POSITION SIZING (NOT A SIGNAL)
+# =========================================================
+
+if regime == "🟢 RISK-ON":
+    exposure = 1.00
+elif regime == "🟡 CAUTION":
+    exposure = 0.55
+else:
+    exposure = 0.20
 
 # =========================================================
 # UI
 # =========================================================
 
-st.title("🧬 Market Immune System — v6")
+st.title("🧬 Market Immune System — v7")
 st.caption(f"Last close: {row['date']}")
 
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Regime", regime)
 c2.metric("Confidence", f"{confidence:.2f}")
-c3.metric("Regime Duration (days)", regime_duration)
-c4.metric("5–10% Drawdown Risk", f"{drawdown_prob:.0%}")
+c3.metric("Suggested Exposure", f"{int(exposure*100)}%")
+c4.metric("Risk-Off Hit Rate", f"{hit_rate:.0%}")
 
 # =========================================================
-# REGIME SHADING CHART
+# PRICE + REGIME SHADING
 # =========================================================
 
 fig, ax = plt.subplots(figsize=(14, 6))
 
 ax.plot(spx.index, spx, label="SPX", linewidth=2)
-ax.plot(
-    spx.index,
-    ai_index * (spx.iloc[0] / ai_index.iloc[0]),
-    linestyle="--",
-    label="AI/Semis (Cap-Weighted)"
-)
 
 for i in range(1, len(signals)):
-    _, conf, _ = classify_regime(signals.iloc[i])
+    reg, conf = classify_regime(signals.iloc[i])
     color = "green" if conf >= 0.67 else "yellow" if conf >= 0.40 else "red"
-    ax.axvspan(signals.index[i-1], signals.index[i], color=color, alpha=0.08)
+    ax.axvspan(signals.index[i-1], signals.index[i], color=color, alpha=0.07)
 
 ax.legend()
 ax.grid(True)
-ax.set_title("SPX vs AI/Semis with Regime Shading")
+ax.set_title("SPX with Regime Overlay")
 
 st.pyplot(fig)
 
 # =========================================================
-# HISTORY TABLE
+# FORWARD RETURN TABLE
 # =========================================================
 
-st.subheader("Regime History")
-st.dataframe(history.tail(30), use_container_width=True)
+st.subheader("Regime-Conditioned Forward Returns (Mean)")
+table = signal_hist.groupby("regime")[["fwd_5d", "fwd_20d", "fwd_60d"]].mean()
+st.dataframe(table.style.format("{:.2%}"), use_container_width=True)
+
+# =========================================================
+# RECENT HISTORY
+# =========================================================
+
+st.subheader("Recent Regime History")
+st.dataframe(history.tail(25), use_container_width=True)
