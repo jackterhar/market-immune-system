@@ -7,138 +7,147 @@ import matplotlib.pyplot as plt
 st.set_page_config(layout="wide")
 
 # =========================================================
-# DATA LOADERS
+# DATA LOAD
 # =========================================================
 
 @st.cache_data
 def load_data():
-    spx = yf.download("^GSPC", start="2022-01-01")
-    btc = yf.download("BTC-USD", start="2022-01-01")
+    tickers = {
+        "SPX": "^GSPC",
+        "SPY": "SPY",
+        "BTC": "BTC-USD",
+        "VIX": "^VIX",
+        "TNX": "^TNX",          # 10Y yield
+        "DXY": "DX-Y.NYB",      # Dollar index
+        "HYG": "HYG",           # High yield ETF
+        "IEF": "IEF",           # Treasuries
+    }
 
-    spx["ret"] = spx["Close"].pct_change()
-    btc["ret"] = btc["Close"].pct_change()
+    data = {}
+    for k, t in tickers.items():
+        data[k] = yf.download(t, start="2022-01-01")["Close"]
 
-    return spx, btc
+    df = pd.DataFrame(data)
+    return df.dropna()
 
-
-spx, btc = load_data()
+df = load_data()
 
 # =========================================================
 # FEATURE ENGINEERING
 # =========================================================
 
-data = pd.DataFrame(index=spx.index)
-data["SPX"] = spx["Close"]
-data["SPX_ret"] = spx["ret"]
+data = df.copy()
 
-data["BTC"] = btc["Close"]
-data["BTC_ret"] = btc["ret"]
+# Returns
+ret = data.pct_change()
 
-# Relative strength (BTC vs SPX)
-data["RS"] = data["BTC_ret"].rolling(20).mean()
-data["RS_Z"] = (data["RS"] - data["RS"].rolling(252).mean()) / data["RS"].rolling(252).std()
+# ----------------------
+# TREND
+# ----------------------
+data["SPX_50"] = data["SPX"].rolling(50).mean()
+data["SPX_200"] = data["SPX"].rolling(200).mean()
+trend_signal = (data["SPX_50"] - data["SPX_200"]) / data["SPX"]
 
-# Volatility regime
-data["VOL"] = data["SPX_ret"].rolling(20).std()
-data["VOL_Z"] = (data["VOL"] - data["VOL"].rolling(252).mean()) / data["VOL"].rolling(252).std()
+trend_z = (trend_signal - trend_signal.rolling(252).mean()) / trend_signal.rolling(252).std()
 
-# Trend regime
-data["TREND"] = data["SPX"].rolling(50).mean() - data["SPX"].rolling(200).mean()
-data["TREND_Z"] = (data["TREND"] - data["TREND"].rolling(252).mean()) / data["TREND"].rolling(252).std()
+# ----------------------
+# VOLATILITY
+# ----------------------
+vol_20 = ret["SPX"].rolling(20).std()
+vol_z = (vol_20 - vol_20.rolling(252).mean()) / vol_20.rolling(252).std()
 
-# BTC Stress (absolute vol spike proxy)
-data["BTC_STRESS"] = data["BTC_ret"].rolling(10).std()
-data["BTC_STRESS_Z"] = (
-    data["BTC_STRESS"] - data["BTC_STRESS"].rolling(252).mean()
-) / data["BTC_STRESS"].rolling(252).std()
+vix_z = (data["VIX"] - data["VIX"].rolling(252).mean()) / data["VIX"].rolling(252).std()
 
-data = data.dropna()
+vol_composite = -(vol_z + vix_z) / 2  # negative vol = bullish
 
-latest = data.iloc[-1]
+# ----------------------
+# CREDIT
+# ----------------------
+credit_ratio = data["HYG"] / data["IEF"]
+credit_z = (credit_ratio - credit_ratio.rolling(252).mean()) / credit_ratio.rolling(252).std()
+
+# ----------------------
+# LIQUIDITY
+# ----------------------
+rates_z = (data["TNX"] - data["TNX"].rolling(252).mean()) / data["TNX"].rolling(252).std()
+dxy_z = (data["DXY"] - data["DXY"].rolling(252).mean()) / data["DXY"].rolling(252).std()
+
+liquidity_composite = -(rates_z + dxy_z) / 2
+
+# ----------------------
+# BTC STRUCTURE
+# ----------------------
+btc_trend = data["BTC"].rolling(50).mean() - data["BTC"].rolling(200).mean()
+btc_trend_z = (btc_trend - btc_trend.rolling(252).mean()) / btc_trend.rolling(252).std()
+
+btc_vol = ret["BTC"].rolling(20).std()
+btc_vol_z = (btc_vol - btc_vol.rolling(252).mean()) / btc_vol.rolling(252).std()
+
+btc_composite = (btc_trend_z - btc_vol_z)
 
 # =========================================================
-# SIGNAL ENGINE
+# COMPOSITE SCORE
 # =========================================================
 
-score = 0
+composite = (
+    0.25 * trend_z +
+    0.20 * vol_composite +
+    0.20 * credit_z +
+    0.20 * liquidity_composite +
+    0.15 * btc_composite
+)
 
-score += 1 if latest["RS_Z"] > 0 else -1
-score += 1 if latest["VOL_Z"] < 0 else -1
-score += 1 if latest["TREND_Z"] > 0 else -1
-score += -1 if latest["BTC_STRESS_Z"] > 1 else 0
+composite = composite.dropna()
 
-confidence = abs(score) / 4
+latest_score = composite.iloc[-1]
 
-if score >= 2:
+# =========================================================
+# REGIME CLASSIFICATION
+# =========================================================
+
+if latest_score > 0.75:
     regime = "RISK-ON"
     exposure = 1.0
-elif score <= -2:
+elif latest_score < -0.75:
     regime = "RISK-OFF"
     exposure = 0.2
 else:
     regime = "CAUTION"
     exposure = 0.5
 
-btc_latest = latest["BTC_STRESS_Z"]
+confidence = min(abs(latest_score) / 2, 1.0)
 
 # =========================================================
-# REGIME SERIES (FOR PLOTTING)
+# FORWARD STATISTICS
 # =========================================================
 
-def classify_row(row):
-    s = 0
-    s += 1 if row["RS_Z"] > 0 else -1
-    s += 1 if row["VOL_Z"] < 0 else -1
-    s += 1 if row["TREND_Z"] > 0 else -1
-    s += -1 if row["BTC_STRESS_Z"] > 1 else 0
+fwd_20 = data["SPX"].pct_change(20).shift(-20)
+drawdown_prob = (fwd_20 < -0.07).mean()
 
-    if s >= 2:
-        return "RISK-ON"
-    elif s <= -2:
-        return "RISK-OFF"
-    else:
-        return "CAUTION"
-
-
-data["Regime"] = data.apply(classify_row, axis=1)
-regime_series = data["Regime"]
-
-# Current regime duration
-current_duration = (
-    regime_series[::-1].eq(regime).cumprod().sum()
-)
-
-# 20-day drawdown proxy
-future_returns = data["SPX"].pct_change(20).shift(-20)
-drawdown_prob = (future_returns < -0.07).mean()
+exp_return = fwd_20.mean()
+exp_vol = fwd_20.std()
 
 # =========================================================
-# WHY TODAY
+# WHY TODAY DECOMPOSITION
 # =========================================================
 
-rs_flag = latest["RS_Z"] > 0
-vol_flag = latest["VOL_Z"] < 0
-trend_flag = latest["TREND_Z"] > 0
+latest = composite.index[-1]
 
 why_today = pd.DataFrame({
-    "Signal": [
-        "Relative Strength (BTC vs SPX)",
-        "Volatility Regime",
+    "Factor": [
         "Trend",
-        "BTC Stress"
+        "Volatility",
+        "Credit",
+        "Liquidity",
+        "Crypto"
     ],
-    "Status": [
-        "Positive" if rs_flag else "Negative",
-        "Supportive" if vol_flag else "Elevated",
-        "Positive" if trend_flag else "Negative",
-        "Elevated" if latest["BTC_STRESS_Z"] > 1 else "Normal"
-    ],
-    "Z-Score": [
-        round(latest["RS_Z"], 2),
-        round(latest["VOL_Z"], 2),
-        round(latest["TREND_Z"], 2),
-        round(latest["BTC_STRESS_Z"], 2),
-    ],
+    "Contribution": [
+        0.25 * trend_z.loc[latest],
+        0.20 * vol_composite.loc[latest],
+        0.20 * credit_z.loc[latest],
+        0.20 * liquidity_composite.loc[latest],
+        0.15 * btc_composite.loc[latest],
+    ]
 })
 
 # =========================================================
@@ -146,51 +155,49 @@ why_today = pd.DataFrame({
 # =========================================================
 
 summary = (
-    f"As of the latest close, the Market Immune System is in a "
-    f"**{regime}** regime with **confidence {confidence:.2f}**. "
-    f"Relative strength is {'supportive' if rs_flag else 'weak'}, "
-    f"volatility conditions are {'benign' if vol_flag else 'elevated'}, "
-    f"and trend signals remain {'constructive' if trend_flag else 'fragile'}. "
-    f"BTC-derived stress is {'a headwind' if btc_latest > 1 else 'neutral to supportive'}, "
-    f"and the current regime has persisted for **{current_duration} days**. "
-    f"Historically, similar conditions have been associated with a "
-    f"**{drawdown_prob:.0%} probability of a >7% drawdown over 20 trading days**, "
-    f"supporting a **{int(exposure*100)}% risk exposure posture**."
+    f"The composite cross-asset regime score is {latest_score:.2f}, "
+    f"placing the market in a **{regime}** posture with {confidence:.0%} confidence. "
+    f"Trend and credit conditions are currently "
+    f"{'supportive' if trend_z.iloc[-1] > 0 else 'fragile'}, "
+    f"while volatility dynamics are "
+    f"{'benign' if vol_composite.iloc[-1] > 0 else 'elevated'}. "
+    f"Liquidity pressure from rates and dollar is "
+    f"{'accommodative' if liquidity_composite.iloc[-1] > 0 else 'tightening'}. "
+    f"BTC structure is "
+    f"{'risk-confirming' if btc_composite.iloc[-1] > 0 else 'risk-diverging'}. "
+    f"Forward 20-day expectancy is {exp_return:.2%} with a "
+    f"{drawdown_prob:.0%} probability of >7% drawdown."
 )
 
 # =========================================================
 # UI
 # =========================================================
 
-st.title("Market Immune System — V9")
+st.title("Market Immune System — V10 (Institutional)")
 
-col1, col2, col3, col4, col5 = st.columns(5)
+col1, col2, col3, col4 = st.columns(4)
 
 col1.metric("Regime", regime)
 col2.metric("Confidence", f"{confidence:.2f}")
 col3.metric("Suggested Exposure", f"{int(exposure*100)}%")
 col4.metric("20d Drawdown Risk", f"{drawdown_prob:.0%}")
-col5.metric("Regime Duration (days)", current_duration)
 
-# Plot SPX with regime shading
-fig, ax = plt.subplots(figsize=(14,6))
-ax.plot(data.index, data["SPX"], label="SPX")
+# Plot SPX + composite
+fig, ax1 = plt.subplots(figsize=(14,6))
 
-for i in range(len(data)-1):
-    color = {
-        "RISK-ON": "green",
-        "CAUTION": "yellow",
-        "RISK-OFF": "red"
-    }[regime_series.iloc[i]]
-    ax.axvspan(data.index[i], data.index[i+1], color=color, alpha=0.1)
+ax1.plot(data.index, data["SPX"], label="SPX")
+ax2 = ax1.twinx()
+ax2.plot(composite.index, composite, linestyle="--")
 
-ax.legend()
 st.pyplot(fig)
 
-# Why today
 st.subheader("Why Today?")
 st.dataframe(why_today, use_container_width=True)
 
-# Daily summary
+st.subheader("Forward Risk Metrics")
+st.write(f"20d Expected Return: {exp_return:.2%}")
+st.write(f"20d Expected Volatility: {exp_vol:.2%}")
+st.write(f"Probability of >7% Drawdown: {drawdown_prob:.0%}")
+
 st.subheader("Daily Summary")
 st.markdown(summary)
