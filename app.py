@@ -1,20 +1,12 @@
-import streamlit as st
-import pandas as pd
-import numpy as np
-import yfinance as yf
-import matplotlib.pyplot as plt
-
-st.set_page_config(layout="wide")
-
 # =========================================================
-# ROBUST DATA LOADER
+# LOAD (SPY-ANCHORED)
 # =========================================================
 
 @st.cache_data
 def load_data():
 
     tickers = [
-        "^GSPC",
+        "SPY",
         "BTC-USD",
         "^VIX",
         "^TNX",
@@ -31,14 +23,18 @@ def load_data():
         threads=False
     )
 
-    closes = raw["Close"].dropna(how="all")
+    closes = raw["Close"]
 
-    return closes.dropna()
+    closes = closes.dropna(subset=["SPY"])   # Anchor to SPY trading days
+    closes = closes.ffill()                  # Fill BTC weekends
+
+    return closes
+
 
 df = load_data()
 
 df.columns = [
-    "SPX",
+    "SPY",
     "BTC",
     "VIX",
     "TNX",
@@ -51,17 +47,17 @@ data = df.copy()
 ret = data.pct_change()
 
 # =========================================================
-# FACTORS
+# FACTORS (unchanged logic)
 # =========================================================
 
 # Trend
-data["MA50"] = data["SPX"].rolling(50).mean()
-data["MA200"] = data["SPX"].rolling(200).mean()
-trend_raw = (data["MA50"] - data["MA200"]) / data["SPX"]
+data["MA50"] = data["SPY"].rolling(50).mean()
+data["MA200"] = data["SPY"].rolling(200).mean()
+trend_raw = (data["MA50"] - data["MA200"]) / data["SPY"]
 trend_z = (trend_raw - trend_raw.rolling(252).mean()) / trend_raw.rolling(252).std()
 
-# Vol
-vol_20 = ret["SPX"].rolling(20).std()
+# Volatility
+vol_20 = ret["SPY"].rolling(20).std()
 vol_z = (vol_20 - vol_20.rolling(252).mean()) / vol_20.rolling(252).std()
 vix_z = (data["VIX"] - data["VIX"].rolling(252).mean()) / data["VIX"].rolling(252).std()
 vol_comp = -(vol_z + vix_z) / 2
@@ -75,11 +71,13 @@ rates_z = (data["TNX"] - data["TNX"].rolling(252).mean()) / data["TNX"].rolling(
 dxy_z = (data["DXY"] - data["DXY"].rolling(252).mean()) / data["DXY"].rolling(252).std()
 liq_comp = -(rates_z + dxy_z) / 2
 
-# BTC
+# BTC stress (complementary)
 btc_trend = data["BTC"].rolling(50).mean() - data["BTC"].rolling(200).mean()
 btc_trend_z = (btc_trend - btc_trend.rolling(252).mean()) / btc_trend.rolling(252).std()
+
 btc_vol = ret["BTC"].rolling(20).std()
 btc_vol_z = (btc_vol - btc_vol.rolling(252).mean()) / btc_vol.rolling(252).std()
+
 btc_comp = btc_trend_z - btc_vol_z
 
 # =========================================================
@@ -92,8 +90,9 @@ composite = (
     0.20*credit_z +
     0.20*liq_comp +
     0.15*btc_comp
-).dropna()
+)
 
+composite = composite.dropna()
 data = data.loc[composite.index]
 
 # =========================================================
@@ -106,93 +105,75 @@ regime_series[composite > 0.75] = 1
 regime_series[composite < -0.75] = -1
 regime_series[(composite >= -0.75) & (composite <= 0.75)] = 0
 
-latest_regime = regime_series.iloc[-1]
 latest_score = float(composite.iloc[-1])
+latest_regime = regime_series.iloc[-1]
 
 if latest_regime == 1:
     regime = "RISK-ON"
-    exposure = 1.0
 elif latest_regime == -1:
     regime = "RISK-OFF"
-    exposure = 0.2
 else:
     regime = "CAUTION"
-    exposure = 0.5
-
-confidence = min(abs(latest_score)/2,1.0)
-
-# Regime duration
-duration = (regime_series[::-1] == latest_regime).cumprod().sum()
 
 # =========================================================
-# FORWARD RISK
+# REGIME BLOCK SHADING FUNCTION
 # =========================================================
 
-fwd_20 = data["SPX"].pct_change(20).shift(-20)
-drawdown_prob = float((fwd_20 < -0.07).mean())
+def add_regime_blocks(ax, regime_series):
+    start = regime_series.index[0]
+    current = regime_series.iloc[0]
+
+    for i in range(1, len(regime_series)):
+        if regime_series.iloc[i] != current:
+            end = regime_series.index[i]
+            color = (
+                "green" if current == 1
+                else "red" if current == -1
+                else "yellow"
+            )
+            ax.axvspan(start, end, color=color, alpha=0.12)
+            start = end
+            current = regime_series.iloc[i]
+
+    # final block
+    end = regime_series.index[-1]
+    color = (
+        "green" if current == 1
+        else "red" if current == -1
+        else "yellow"
+    )
+    ax.axvspan(start, end, color=color, alpha=0.12)
 
 # =========================================================
-# UI
+# CHART 1 — SPY (PRIMARY)
 # =========================================================
 
-st.title("Market Immune System — V11")
+st.subheader("SPY with Regime Overlay")
 
-c1,c2,c3,c4 = st.columns(4)
-c1.metric("Regime", regime)
-c2.metric("Confidence", f"{confidence:.2f}")
-c3.metric("Exposure", f"{int(exposure*100)}%")
-c4.metric("20d Drawdown Risk", f"{drawdown_prob:.0%}")
+fig1, ax1 = plt.subplots(figsize=(15,6))
 
-# =========================================================
-# CLEAN REGIME SHADING
-# =========================================================
+ax1.plot(data.index, data["SPY"], linewidth=2)
+add_regime_blocks(ax1, regime_series)
 
-fig, ax = plt.subplots(figsize=(15,7))
+ax2 = ax1.twinx()
+ax2.plot(composite.index, composite, linestyle="--", alpha=0.6)
 
-ax.plot(data.index, data["SPX"], linewidth=2)
-
-for i in range(1,len(regime_series)):
-    if regime_series.iloc[i] != regime_series.iloc[i-1]:
-        start = regime_series.index[i]
-        break
-
-for date, value in regime_series.items():
-    if value == 1:
-        ax.axvspan(date, date, color="green", alpha=0.08)
-    elif value == -1:
-        ax.axvspan(date, date, color="red", alpha=0.08)
-    else:
-        ax.axvspan(date, date, color="yellow", alpha=0.05)
-
-ax.set_title("SPX with Regime Overlay")
-st.pyplot(fig)
+ax1.set_title("SPY (Primary Regime Structure)")
+st.pyplot(fig1)
 
 # =========================================================
-# WHY TODAY
+# CHART 2 — BTC (COMPLEMENTARY)
 # =========================================================
 
-latest_idx = composite.index[-1]
+st.subheader("BTC with Same Regime Overlay")
 
-why = pd.DataFrame({
-    "Factor":["Trend","Volatility","Credit","Liquidity","Crypto"],
-    "Z-Score":[
-        float(trend_z.loc[latest_idx]),
-        float(vol_comp.loc[latest_idx]),
-        float(credit_z.loc[latest_idx]),
-        float(liq_comp.loc[latest_idx]),
-        float(btc_comp.loc[latest_idx])
-    ]
-})
+fig2, ax3 = plt.subplots(figsize=(15,6))
 
-st.subheader("Why Today?")
-st.dataframe(why, use_container_width=True)
+ax3.plot(data.index, data["BTC"], linewidth=2)
+add_regime_blocks(ax3, regime_series)
 
-st.subheader("Regime Duration")
-st.write(f"{duration} trading days")
+ax4 = ax3.twinx()
+ax4.plot(btc_comp.index, btc_comp, linestyle="--", alpha=0.6)
 
-st.subheader("Daily Summary")
-st.markdown(
-    f"The system is in **{regime}** with {confidence:.0%} confidence. "
-    f"Cross-asset composite score is {latest_score:.2f}. "
-    f"Probability of >7% drawdown over 20 days: {drawdown_prob:.0%}."
-)
+ax3.set_title("BTC (Crypto Stress Context)")
+st.pyplot(fig2)
