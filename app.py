@@ -1,5 +1,5 @@
 # ==========================================
-# MARKET IMMUNE SYSTEM — v14.1 (STABLE)
+# MARKET IMMUNE SYSTEM — v14.2 (ROBUST)
 # ==========================================
 
 import streamlit as st
@@ -10,19 +10,34 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 
 st.set_page_config(layout="wide")
-st.title("🧬 Market Immune System — v14.1 (Macro Integrated)")
+st.title("🧬 Market Immune System — v14.2 (Macro Integrated Robust)")
 
 # ==========================================
 # SAFE DOWNLOAD FUNCTION
 # ==========================================
 
 def get_close(ticker, period="3y"):
+
     df = yf.download(ticker, period=period, auto_adjust=True, progress=False)
 
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.droplevel(0)
+    if df is None or df.empty:
+        return pd.Series(dtype=float)
 
-    return df["Close"]
+    # Flatten multi-index if needed
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(-1)
+
+    # If Close exists
+    if "Close" in df.columns:
+        return df["Close"]
+
+    # If only one column exists, use it
+    if len(df.columns) == 1:
+        return df.iloc[:, 0]
+
+    # Otherwise fallback safely
+    return df.iloc[:, 0]
+
 
 # ==========================================
 # LOAD DATA
@@ -34,23 +49,23 @@ def load_data():
     spy = get_close("SPY")
     btc = get_close("BTC-USD")
     vix = get_close("^VIX")
-
     t10 = get_close("^TNX")
     t2 = get_close("^IRX")
-
     hyg = get_close("HYG")
     ief = get_close("IEF")
 
+    # Align everything to SPY index
     df = pd.DataFrame(index=spy.index)
 
     df["SPY"] = spy
     df["BTC"] = btc.reindex(df.index)
     df["VIX"] = vix.reindex(df.index)
-
     df["10Y"] = t10.reindex(df.index)
     df["2Y_proxy"] = t2.reindex(df.index)
 
-    df["Credit_Ratio"] = hyg.reindex(df.index) / ief.reindex(df.index)
+    df["Credit_Ratio"] = (
+        hyg.reindex(df.index) / ief.reindex(df.index)
+    )
 
     df.dropna(inplace=True)
 
@@ -73,6 +88,10 @@ def load_data():
 
 
 df = load_data()
+
+if df.empty:
+    st.error("Data failed to load. Likely Yahoo rate limit. Refresh in 60 seconds.")
+    st.stop()
 
 # ==========================================
 # RISK ENGINE
@@ -171,7 +190,7 @@ m3.metric("VIX", f"{latest['VIX']:.2f}")
 st.divider()
 
 # ==========================================
-# SHADING FUNCTION
+# SHADING
 # ==========================================
 
 def shade(ax):
@@ -213,7 +232,7 @@ st.divider()
 
 summary = f"""
 As of {datetime.today().strftime('%Y-%m-%d')}, the system classifies the market as 
-**{latest['regime']}** with confidence {confidence}. 
+**{latest['regime']}** with confidence {confidence}.
 
 Suggested exposure: **{exposure}%**.
 
