@@ -18,14 +18,24 @@ st.title("🧬 Market Immune System")
 # ==========================================
 
 def get_close(ticker, period="3y"):
-    df = yf.download(ticker, period=period, auto_adjust=True, progress=False)
+    df = yf.download(ticker, period=period, auto_adjust=False, progress=False)
+
     if df is None or df.empty:
         return pd.Series(dtype=float)
 
+    # Flatten MultiIndex if present
     if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(-1)
+        df.columns = df.columns.get_level_values(0)
 
-    return df["Close"]
+    # Prefer Adjusted Close if available
+    if "Adj Close" in df.columns:
+        return df["Adj Close"]
+
+    if "Close" in df.columns:
+        return df["Close"]
+
+    # Fallback: first numeric column
+    return df.select_dtypes(include=["float64", "int64"]).iloc[:, 0]
 
 
 @st.cache_data(show_spinner=False)
