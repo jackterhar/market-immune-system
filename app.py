@@ -1,36 +1,63 @@
+# ==========================================
+# MARKET IMMUNE SYSTEM — v15
+# Independent SPY + BTC Regime Engines
+# ==========================================
+
 import streamlit as st
-import yfinance as yf
 import pandas as pd
 import numpy as np
+import yfinance as yf
 import matplotlib.pyplot as plt
+from datetime import datetime
 
 st.set_page_config(layout="wide")
-st.title("Market Immune System — Dual Regime Engine")
+st.title("🧬 Market Immune System — Independent Regimes")
 
-# -----------------------------
-# DATA LOADING
-# -----------------------------
-@st.cache_data
+# ==========================================
+# SAFE DOWNLOAD
+# ==========================================
+
+def get_close(ticker, period="3y"):
+    df = yf.download(ticker, period=period, auto_adjust=True, progress=False)
+
+    if df is None or df.empty:
+        return pd.Series(dtype=float)
+
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(-1)
+
+    if "Close" in df.columns:
+        return df["Close"]
+
+    return df.iloc[:, 0]
+
+
+# ==========================================
+# LOAD DATA
+# ==========================================
+
+@st.cache_data(show_spinner=False)
 def load_data():
-    spy = yf.download("SPY", period="5y")
-    btc = yf.download("BTC-USD", period="5y")
-    vix = yf.download("^VIX", period="5y")
-    hyg = yf.download("HYG", period="5y")
-    ief = yf.download("IEF", period="5y")
-    t10 = yf.download("^TNX", period="5y")
-    t2 = yf.download("^IRX", period="5y")
+
+    spy = get_close("SPY")
+    btc = get_close("BTC-USD")
+    vix = get_close("^VIX")
+    hyg = get_close("HYG")
+    ief = get_close("IEF")
+    t10 = get_close("^TNX")
+    t2 = get_close("^IRX")
 
     df = pd.DataFrame(index=spy.index)
 
-    df["SPY"] = spy["Close"]
-    df["BTC"] = btc["Close"]
-    df["VIX"] = vix["Close"]
-    df["HYG"] = hyg["Close"]
-    df["IEF"] = ief["Close"]
-    df["10Y"] = t10["Close"]
-    df["2Y"] = t2["Close"]
+    df["SPY"] = spy
+    df["BTC"] = btc.reindex(df.index)
+    df["VIX"] = vix.reindex(df.index)
+    df["HYG"] = hyg.reindex(df.index)
+    df["IEF"] = ief.reindex(df.index)
+    df["10Y"] = t10.reindex(df.index)
+    df["2Y"] = t2.reindex(df.index)
 
-    df = df.dropna()
+    df.dropna(inplace=True)
 
     # Credit ratio
     df["Credit_Ratio"] = df["HYG"] / df["IEF"]
@@ -38,41 +65,38 @@ def load_data():
     # Yield curve
     df["Curve"] = df["10Y"] - df["2Y"]
 
-    return df
+    # Returns
+    df["SPY_ret"] = df["SPY"].pct_change()
+    df["BTC_ret"] = df["BTC"].pct_change()
 
-df = load_data()
-
-# -----------------------------
-# INDICATORS
-# -----------------------------
-def add_indicators(df):
-
-    # SPY MAs
+    # MAs
     df["SPY_50"] = df["SPY"].rolling(50).mean()
     df["SPY_200"] = df["SPY"].rolling(200).mean()
-
-    # BTC MAs
     df["BTC_50"] = df["BTC"].rolling(50).mean()
     df["BTC_200"] = df["BTC"].rolling(200).mean()
 
-    # Volatility
-    df["SPY_vol"] = df["SPY"].pct_change().rolling(20).std() * np.sqrt(252)
-    df["BTC_vol"] = df["BTC"].pct_change().rolling(20).std() * np.sqrt(252)
+    # Vol
+    df["SPY_vol"] = df["SPY_ret"].rolling(20).std() * np.sqrt(252)
+    df["BTC_vol"] = df["BTC_ret"].rolling(20).std() * np.sqrt(252)
 
     df["SPY_vol_med"] = df["SPY_vol"].rolling(252).median()
     df["BTC_vol_med"] = df["BTC_vol"].rolling(252).median()
 
-    # Credit trend
-    df["Credit_Trend"] = df["Credit_Ratio"].pct_change(60)
-
     return df
 
-df = add_indicators(df)
 
-# -----------------------------
-# REGIME SCORING
-# -----------------------------
+df = load_data()
+
+if df.empty:
+    st.error("Data failed to load.")
+    st.stop()
+
+# ==========================================
+# SPY REGIME ENGINE (MACRO INTEGRATED)
+# ==========================================
+
 def score_spy(row):
+
     score = 0
 
     # Trend
@@ -85,18 +109,41 @@ def score_spy(row):
     if row["SPY_vol"] > row["SPY_vol_med"]:
         score += 1
 
-    # Credit
-    if row["Credit_Trend"] < 0:
+    # Credit deterioration
+    if row["Credit_Ratio"] < df["Credit_Ratio"].rolling(60).mean().iloc[-1]:
         score += 1
 
-    # Yield curve
+    # Yield curve inversion
     if row["Curve"] < 0:
         score += 1
 
-    return score  # 0–5
+    # VIX stress
+    if row["VIX"] > 25:
+        score += 1
 
+    return score  # max 6
+
+
+df["SPY_score"] = df.apply(score_spy, axis=1)
+
+
+def classify_spy(score):
+    if score <= 2:
+        return "RISK-ON"
+    elif score <= 4:
+        return "CAUTION"
+    else:
+        return "RISK-OFF"
+
+
+df["SPY_regime"] = df["SPY_score"].apply(classify_spy)
+
+# ==========================================
+# BTC REGIME ENGINE (SEPARATE)
+# ==========================================
 
 def score_btc(row):
+
     score = 0
 
     # Trend
@@ -109,90 +156,109 @@ def score_btc(row):
     if row["BTC_vol"] > row["BTC_vol_med"]:
         score += 1
 
-    # VIX stress
+    # Risk spillover
     if row["VIX"] > 25:
         score += 1
 
-    return score  # 0–4
+    return score  # max 4
 
 
-def score_macro(row):
-    score = 0
-
-    if row["Curve"] < 0:
-        score += 1
-    if row["Credit_Trend"] < 0:
-        score += 1
-    if row["VIX"] > 25:
-        score += 1
-
-    return score  # 0–3
-
-
-df["SPY_score"] = df.apply(score_spy, axis=1)
 df["BTC_score"] = df.apply(score_btc, axis=1)
-df["Macro_score"] = df.apply(score_macro, axis=1)
 
-df["Composite_score"] = (
-    df["SPY_score"] + df["BTC_score"] + df["Macro_score"]
-)
 
-# -----------------------------
-# REGIME LABELS
-# -----------------------------
-def label_regime(score, max_score):
-
-    if score <= max_score * 0.33:
+def classify_btc(score):
+    if score <= 1:
         return "RISK-ON"
-    elif score <= max_score * 0.66:
+    elif score <= 2:
         return "CAUTION"
     else:
         return "RISK-OFF"
 
+
+df["BTC_regime"] = df["BTC_score"].apply(classify_btc)
+
+# ==========================================
+# LATEST VALUES
+# ==========================================
+
 latest = df.iloc[-1]
 
-spy_regime = label_regime(latest["SPY_score"], 5)
-btc_regime = label_regime(latest["BTC_score"], 4)
-macro_regime = label_regime(latest["Macro_score"], 3)
-composite_regime = label_regime(latest["Composite_score"], 12)
+# ==========================================
+# DISPLAY REGIMES
+# ==========================================
 
-# -----------------------------
-# DISPLAY METRICS
-# -----------------------------
-col1, col2, col3, col4 = st.columns(4)
+col1, col2 = st.columns(2)
 
-col1.metric("SPY Regime", spy_regime)
-col2.metric("BTC Regime", btc_regime)
-col3.metric("Macro Overlay", macro_regime)
-col4.metric("Composite", composite_regime)
+col1.metric("SPY Regime", latest["SPY_regime"])
+col2.metric("BTC Regime", latest["BTC_regime"])
 
-# -----------------------------
-# CHART FUNCTION
-# -----------------------------
-def plot_chart(asset, score_col, max_score):
+st.write(f"SPY Score: {latest['SPY_score']} / 6")
+st.write(f"BTC Score: {latest['BTC_score']} / 4")
 
-    fig, ax = plt.subplots(figsize=(12,5))
-    ax.plot(df[asset], label=asset)
+st.divider()
 
-    for i in range(len(df)):
-        score = df.iloc[i][score_col]
-        regime = label_regime(score, max_score)
+# ==========================================
+# COLOR MAP
+# ==========================================
 
-        if regime == "RISK-OFF":
-            ax.axvspan(df.index[i], df.index[i], color="red", alpha=0.2)
-        elif regime == "CAUTION":
-            ax.axvspan(df.index[i], df.index[i], color="yellow", alpha=0.2)
+color_map = {
+    "RISK-ON": "green",
+    "CAUTION": "yellow",
+    "RISK-OFF": "red"
+}
 
-    ax.set_title(f"{asset} with Independent Regime Shading")
-    ax.legend()
-    st.pyplot(fig)
+# ==========================================
+# SHADING FUNCTION
+# ==========================================
 
+def shade(ax, regime_col):
+    for i in range(1, len(df)):
+        regime = df.iloc[i][regime_col]
+        ax.axvspan(
+            df.index[i-1],
+            df.index[i],
+            color=color_map[regime],
+            alpha=0.08
+        )
 
-# -----------------------------
-# PLOTS
-# -----------------------------
-st.subheader("SPY Regime Chart")
-plot_chart("SPY", "SPY_score", 5)
+# ==========================================
+# SPY CHART
+# ==========================================
 
-st.subheader("BTC Regime Chart")
-plot_chart("BTC", "BTC_score", 4)
+st.subheader("SPY — Independent Regime")
+
+fig1, ax1 = plt.subplots(figsize=(14,6))
+ax1.plot(df.index, df["SPY"], linewidth=2)
+shade(ax1, "SPY_regime")
+st.pyplot(fig1)
+
+# ==========================================
+# BTC CHART
+# ==========================================
+
+st.subheader("BTC — Independent Regime")
+
+fig2, ax2 = plt.subplots(figsize=(14,6))
+ax2.plot(df.index, df["BTC"], linewidth=2)
+shade(ax2, "BTC_regime")
+st.pyplot(fig2)
+
+st.divider()
+
+# ==========================================
+# SUMMARY
+# ==========================================
+
+st.subheader("Summary")
+
+st.write(f"""
+As of {datetime.today().strftime('%Y-%m-%d')}:
+
+SPY Regime: **{latest['SPY_regime']}**  
+BTC Regime: **{latest['BTC_regime']}**
+
+SPY integrates macro structure (credit, yield curve, volatility, VIX).  
+BTC reflects crypto-specific trend + volatility with risk spillover.
+
+These regimes are now fully independent.
+""")
