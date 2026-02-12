@@ -1,5 +1,5 @@
 # ================================
-# IMPORTS (MUST BE FIRST LINES)
+# IMPORTS
 # ================================
 import streamlit as st
 import pandas as pd
@@ -9,17 +9,16 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 
 # ================================
-# PAGE CONFIG
+# CONFIG
 # ================================
 st.set_page_config(layout="wide")
-st.title("🧬 Market Immune System — v12")
+st.title("🧬 Market Immune System — v13")
 
 # ================================
-# DATA LOADER
+# DATA
 # ================================
 @st.cache_data(show_spinner=False)
 def load_data():
-
     spy = yf.download("SPY", period="3y", auto_adjust=True)
     btc = yf.download("BTC-USD", period="3y", auto_adjust=True)
     vix = yf.download("^VIX", period="3y", auto_adjust=True)
@@ -31,135 +30,149 @@ def load_data():
 
     df.dropna(inplace=True)
 
-    # Returns
     df["SPY_ret"] = df["SPY"].pct_change()
     df["BTC_ret"] = df["BTC"].pct_change()
 
-    # Moving averages
     df["SPY_50"] = df["SPY"].rolling(50).mean()
     df["SPY_200"] = df["SPY"].rolling(200).mean()
 
-    # Volatility
     df["SPY_vol"] = df["SPY_ret"].rolling(20).std() * np.sqrt(252)
-
-    # BTC stress proxy
-    df["BTC_stress"] = df["BTC_ret"].rolling(20).std()
+    df["BTC_vol"] = df["BTC_ret"].rolling(20).std() * np.sqrt(252)
 
     return df
 
 df = load_data()
 
 # ================================
-# REGIME ENGINE (SPY FIRST)
+# REGIME ENGINE (SPY PRIMARY)
 # ================================
+def compute_risk_score(row, df):
+
+    score = 0
+
+    if row["SPY"] < row["SPY_200"]:
+        score += 1
+    if row["SPY"] < row["SPY_50"]:
+        score += 1
+    if row["SPY_vol"] > df["SPY_vol"].median():
+        score += 1
+    if row["VIX"] > df["VIX"].median():
+        score += 1
+    if row["BTC_vol"] > df["BTC_vol"].median():
+        score += 1
+
+    return score
+
+df["risk_score"] = df.apply(lambda row: compute_risk_score(row, df), axis=1)
+
+def classify(score):
+    if score >= 4:
+        return "RISK-OFF"
+    elif score >= 2:
+        return "CAUTION"
+    else:
+        return "RISK-ON"
+
+df["regime"] = df["risk_score"].apply(classify)
+
 latest = df.iloc[-1]
 
-risk_score = 0
-
-# Trend
-if latest["SPY"] < latest["SPY_200"]:
-    risk_score += 1
-
-if latest["SPY"] < latest["SPY_50"]:
-    risk_score += 1
-
-# Volatility
-if latest["SPY_vol"] > df["SPY_vol"].median():
-    risk_score += 1
-
-# VIX
-if latest["VIX"] > df["VIX"].median():
-    risk_score += 1
-
-# BTC stress confirmation
-if latest["BTC_stress"] > df["BTC_stress"].median():
-    risk_score += 1
-
 # ================================
-# REGIME CLASSIFICATION
+# COLOR MAP
 # ================================
-if risk_score >= 4:
-    regime = "RISK-OFF"
-    exposure = 20
-elif risk_score >= 2:
-    regime = "CAUTION"
+color_map = {
+    "RISK-ON": "#2ecc71",
+    "CAUTION": "#f1c40f",
+    "RISK-OFF": "#e74c3c"
+}
+
+regime = latest["regime"]
+confidence = round(latest["risk_score"] / 5, 2)
+
+if regime == "RISK-ON":
+    exposure = 80
+elif regime == "CAUTION":
     exposure = 50
 else:
-    regime = "RISK-ON"
-    exposure = 80
-
-confidence = round(risk_score / 5, 2)
+    exposure = 20
 
 # ================================
-# TOP METRICS
+# REGIME HEADER
 # ================================
-col1, col2, col3, col4 = st.columns(4)
+st.markdown(
+    f"""
+    ### Current Regime: 
+    <span style='color:{color_map[regime]}; font-weight:bold'>
+    ● {regime}
+    </span>
+    """,
+    unsafe_allow_html=True
+)
 
-col1.metric("Regime", regime)
-col2.metric("Confidence", confidence)
-col3.metric("Suggested Exposure", f"{exposure}%")
-col4.metric("SPY 20d Vol (ann)", f"{latest['SPY_vol']:.2%}")
+# ================================
+# METRICS — SPY
+# ================================
+st.subheader("SPY Metrics")
+
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Risk Score", int(latest["risk_score"]))
+c2.metric("Confidence", confidence)
+c3.metric("Suggested Exposure", f"{exposure}%")
+c4.metric("20d Vol (ann)", f"{latest['SPY_vol']:.2%}")
+
+# ================================
+# METRICS — BTC
+# ================================
+st.subheader("BTC Metrics")
+
+btc_score = 1 if latest["BTC_vol"] > df["BTC_vol"].median() else 0
+btc_conf = round(btc_score, 2)
+btc_exposure = 70 if btc_score == 0 else 30
+
+b1, b2, b3, b4 = st.columns(4)
+b1.metric("Risk Signal", btc_score)
+b2.metric("Confidence", btc_conf)
+b3.metric("Suggested Exposure", f"{btc_exposure}%")
+b4.metric("20d Vol (ann)", f"{latest['BTC_vol']:.2%}")
 
 st.divider()
 
 # ================================
-# CHART 1 — SPY WITH REGIME BACKDROP
+# SHADING FUNCTION
 # ================================
-st.subheader("SPY with Regime Overlay")
+def shade_chart(ax, df):
+    for i in range(1, len(df)):
+        regime = df["regime"].iloc[i]
+        ax.axvspan(
+            df.index[i-1],
+            df.index[i],
+            color=color_map[regime],
+            alpha=0.06
+        )
+
+# ================================
+# CHART 1 — SPY
+# ================================
+st.subheader("SPY with Risk Regime Overlay")
 
 fig1, ax1 = plt.subplots(figsize=(14,6))
-ax1.plot(df.index, df["SPY"], label="SPY")
-
-# Shade based on regime score historically
-for i in range(len(df)):
-    if df["SPY"].iloc[i] < df["SPY_200"].iloc[i]:
-        ax1.axvspan(df.index[i], df.index[i], alpha=0.02)
-
+ax1.plot(df.index, df["SPY"], linewidth=2)
+shade_chart(ax1, df)
 ax1.set_title("SPY Price")
-ax1.legend()
 st.pyplot(fig1)
 
 # ================================
-# CHART 2 — BTC (Complementary Risk Barometer)
+# CHART 2 — BTC
 # ================================
-st.subheader("BTC Risk Proxy")
+st.subheader("BTC with Risk Regime Overlay")
 
 fig2, ax2 = plt.subplots(figsize=(14,6))
-ax2.plot(df.index, df["BTC"], label="BTC")
-
+ax2.plot(df.index, df["BTC"], linewidth=2)
+shade_chart(ax2, df)
 ax2.set_title("BTC Price")
-ax2.legend()
 st.pyplot(fig2)
 
 st.divider()
-
-# ================================
-# WHY TODAY SECTION
-# ================================
-st.subheader("Why Today?")
-
-reasons = []
-
-if latest["SPY"] < latest["SPY_200"]:
-    reasons.append("SPY below 200-day moving average (macro trend weak).")
-
-if latest["SPY"] < latest["SPY_50"]:
-    reasons.append("SPY below 50-day moving average (short-term weakness).")
-
-if latest["SPY_vol"] > df["SPY_vol"].median():
-    reasons.append("Volatility elevated vs median.")
-
-if latest["VIX"] > df["VIX"].median():
-    reasons.append("VIX elevated vs median.")
-
-if latest["BTC_stress"] > df["BTC_stress"].median():
-    reasons.append("BTC volatility elevated (cross-asset stress).")
-
-if len(reasons) == 0:
-    st.write("Conditions supportive of risk appetite.")
-else:
-    for r in reasons:
-        st.write("- " + r)
 
 # ================================
 # DAILY SUMMARY
@@ -167,10 +180,16 @@ else:
 st.subheader("Daily Summary")
 
 summary = f"""
-As of {datetime.today().strftime('%Y-%m-%d')}, the model classifies the market as **{regime}**
-with a confidence score of {confidence}. The system is primarily driven by SPY trend,
-volatility regime, and cross-asset confirmation via BTC and VIX.
-Suggested equity exposure is **{exposure}%** based on current risk conditions.
+As of {datetime.today().strftime('%Y-%m-%d')}, the system classifies the market as 
+**{regime}** with a confidence score of {confidence}. 
+
+SPY trend, volatility regime, VIX level, and BTC volatility collectively determine 
+the current state. Suggested equity exposure is **{exposure}%** based on risk conditions.
+
+Shaded chart regions correspond to:
+- Green → Risk-On
+- Yellow → Caution
+- Red → Risk-Off
 """
 
 st.write(summary)
