@@ -7,11 +7,11 @@ import matplotlib.pyplot as plt
 st.set_page_config(layout="wide")
 
 ############################################
-# SAFE DATA LOADER
+# SAFE LOADER
 ############################################
 
 def get_data(ticker):
-    df = yf.download(ticker, start="2010-01-01", auto_adjust=False, progress=False)
+    df = yf.download(ticker, period="5y", auto_adjust=False, progress=False)
 
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
@@ -21,11 +21,10 @@ def get_data(ticker):
     else:
         df = df[["Close"]]
 
-    df = df.dropna()
-    return df
+    return df.dropna()
 
 ############################################
-# DOWNLOAD DATA
+# DOWNLOAD
 ############################################
 
 spy = get_data("SPY")
@@ -37,7 +36,7 @@ tnx = get_data("^TNX")
 irx = get_data("^IRX")
 
 ############################################
-# ALIGN MACRO DATA TO SPY INDEX
+# MACRO ALIGNMENT
 ############################################
 
 macro = pd.concat([
@@ -55,10 +54,9 @@ macro = macro.reindex(spy.index).ffill()
 # SPY IMMUNE SYSTEM
 ############################################
 
-spy["returns"] = spy["Close"].pct_change()
-spy["vol20"] = spy["returns"].rolling(20).std() * np.sqrt(252)
+spy["ret"] = spy["Close"].pct_change()
+spy["vol20"] = spy["ret"].rolling(20).std() * np.sqrt(252)
 spy["ma200"] = spy["Close"].rolling(200).mean()
-
 spy = spy.dropna()
 
 macro = macro.reindex(spy.index)
@@ -66,20 +64,19 @@ macro = macro.reindex(spy.index)
 credit_ratio = macro["HYG"] / macro["LQD"]
 yield_curve = macro["TNX"] - macro["IRX"]
 
-# Score components
-trend_score = np.where(spy["Close"] > spy["ma200"], 1, -1)
-vol_score = np.where(spy["vol20"] < spy["vol20"].rolling(252).median(), 1, -1)
-credit_score = np.where(credit_ratio > credit_ratio.rolling(60).mean(), 1, -1)
-curve_score = np.where(yield_curve > 0, 1, -1)
+trend = np.where(spy["Close"] > spy["ma200"], 1, -1)
+vol = np.where(spy["vol20"] < spy["vol20"].rolling(252).median(), 1, -1)
+credit = np.where(credit_ratio > credit_ratio.rolling(60).mean(), 1, -1)
+curve = np.where(yield_curve > 0, 1, -1)
 
-spy_score = trend_score + vol_score + credit_score + curve_score
+spy_score = trend + vol + credit + curve
 
 ############################################
 # BTC IMMUNE SYSTEM
 ############################################
 
-btc["returns"] = btc["Close"].pct_change()
-btc["vol30"] = btc["returns"].rolling(30).std() * np.sqrt(365)
+btc["ret"] = btc["Close"].pct_change()
+btc["vol30"] = btc["ret"].rolling(30).std() * np.sqrt(365)
 btc["ma200"] = btc["Close"].rolling(200).mean()
 btc = btc.dropna()
 
@@ -89,7 +86,7 @@ btc_score = (
 )
 
 ############################################
-# REGIME CLASSIFIER
+# CLASSIFICATION
 ############################################
 
 def classify(score):
@@ -102,15 +99,26 @@ def classify(score):
     else:
         return "DEFENSIVE", "red", 20
 
-############################################
-# LATEST VALUES
-############################################
-
 spy_latest = spy_score[-1]
 btc_latest = btc_score[-1]
 
 spy_regime, spy_color, spy_exposure = classify(spy_latest)
 btc_regime, btc_color, btc_exposure = classify(btc_latest)
+
+############################################
+# TRIM TO LAST 24 MONTHS + BIWEEKLY
+############################################
+
+cutoff = spy.index[-1] - pd.DateOffset(months=24)
+
+spy_24 = spy[spy.index >= cutoff].resample("2W").last()
+btc_24 = btc[btc.index >= cutoff].resample("2W").last()
+
+spy_score_24 = pd.Series(spy_score, index=spy.index)
+spy_score_24 = spy_score_24[spy_score_24.index >= cutoff].resample("2W").last()
+
+btc_score_24 = pd.Series(btc_score, index=btc.index)
+btc_score_24 = btc_score_24[btc_score_24.index >= cutoff].resample("2W").last()
 
 ############################################
 # DASHBOARD
@@ -136,13 +144,11 @@ with col1:
     st.markdown(f"**SPY 20D Vol:** {round(spy['vol20'][-1]*100,2)}%")
 
     fig, ax = plt.subplots(figsize=(8,4))
-    ax.plot(spy.index, spy["Close"], linewidth=1.5)
+    ax.plot(spy_24.index, spy_24["Close"], linewidth=2)
 
-    for i in range(len(spy_score)):
-        if spy_score[i] >= 3:
-            ax.axvspan(spy.index[i], spy.index[i], color='green', alpha=0.03)
-        elif spy_score[i] <= -2:
-            ax.axvspan(spy.index[i], spy.index[i], color='red', alpha=0.03)
+    for i in range(len(spy_score_24)):
+        regime, color, _ = classify(spy_score_24.iloc[i])
+        ax.axvspan(spy_24.index[i], spy_24.index[i], color=color, alpha=0.08)
 
     st.pyplot(fig)
 
@@ -159,13 +165,11 @@ with col2:
     st.markdown(f"**BTC 30D Vol:** {round(btc['vol30'][-1]*100,2)}%")
 
     fig2, ax2 = plt.subplots(figsize=(8,4))
-    ax2.plot(btc.index, btc["Close"], linewidth=1.5)
+    ax2.plot(btc_24.index, btc_24["Close"], linewidth=2)
 
-    for i in range(len(btc_score)):
-        if btc_score[i] >= 2:
-            ax2.axvspan(btc.index[i], btc.index[i], color='green', alpha=0.03)
-        elif btc_score[i] <= -1:
-            ax2.axvspan(btc.index[i], btc.index[i], color='red', alpha=0.03)
+    for i in range(len(btc_score_24)):
+        regime, color, _ = classify(btc_score_24.iloc[i])
+        ax2.axvspan(btc_24.index[i], btc_24.index[i], color=color, alpha=0.08)
 
     st.pyplot(fig2)
 
@@ -174,14 +178,13 @@ with col2:
 ############################################
 
 st.markdown("---")
-st.subheader("How to Interpret the Immune System")
+st.subheader("How to Interpret")
 
 st.markdown("""
-**Trend (200D MA):** Determines structural bull vs bear regime.  
-**Volatility:** Rising realized vol indicates stress conditions.  
-**Credit Ratio (HYG/LQD):** Risk appetite gauge. Rising = expansion.  
-**Yield Curve (10Y–3M):** Inversion signals tightening / recession risk.  
-**VIX:** Equity fear gauge. Elevated VIX confirms risk-off.  
-**Score:** Composite of all components.  
-**Suggested Exposure:** Capital allocation guidance based on total alignment.  
+**RISK ON** – Trend, volatility, and macro conditions aligned positively.  
+**ACCUMULATION** – Improving conditions but not fully confirmed.  
+**NEUTRAL** – Mixed signals. Reduce leverage.  
+**DEFENSIVE** – Macro or volatility stress. Capital preservation phase.
+
+Bi-weekly chart shows the last 24 months only for clarity.
 """)
