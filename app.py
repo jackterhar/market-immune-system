@@ -10,18 +10,18 @@ from datetime import datetime, timedelta
 st.set_page_config(layout="wide")
 st.title("🧬 Market Immune System")
 
-# -------------------------
+# -----------------------
 # CONFIG
-# -------------------------
+# -----------------------
 LOOKBACK_MONTHS = 24
 RESAMPLE_RULE = "2W"
 start_date = datetime.today() - timedelta(days=LOOKBACK_MONTHS * 30)
 
-# -------------------------
+# -----------------------
 # DATA
-# -------------------------
+# -----------------------
 @st.cache_data
-def load_data():
+def load():
     spy = yf.download("SPY", start=start_date)
     btc = yf.download("BTC-USD", start=start_date)
     vix = yf.download("^VIX", start=start_date)
@@ -29,15 +29,10 @@ def load_data():
     t3m = yf.download("^IRX", start=start_date)
     hyg = yf.download("HYG", start=start_date)
     lqd = yf.download("LQD", start=start_date)
-
     return spy, btc, vix, t10, t3m, hyg, lqd
 
+spy, btc, vix, t10, t3m, hyg, lqd = load()
 
-spy, btc, vix, t10, t3m, hyg, lqd = load_data()
-
-# -------------------------
-# RESAMPLE BI-WEEKLY
-# -------------------------
 def resample(df):
     return df.resample(RESAMPLE_RULE).agg({
         "Open": "first",
@@ -55,9 +50,9 @@ t3m = t3m.resample(RESAMPLE_RULE).last()
 hyg = hyg.resample(RESAMPLE_RULE).last()
 lqd = lqd.resample(RESAMPLE_RULE).last()
 
-# -------------------------
+# -----------------------
 # METRICS
-# -------------------------
+# -----------------------
 spy["ma20"] = spy["Close"].rolling(20).mean()
 spy["vol20"] = spy["Close"].pct_change().rolling(20).std() * np.sqrt(252)
 
@@ -67,48 +62,50 @@ btc["vol20"] = btc["Close"].pct_change().rolling(20).std() * np.sqrt(252)
 yield_curve = (t10["Close"] - t3m["Close"]).reindex(spy.index)
 credit_ratio = (hyg["Close"] / lqd["Close"]).reindex(spy.index)
 
-# -------------------------
-# REGIME SCORING
-# -------------------------
-def compute_regime():
+# -----------------------
+# REGIME FUNCTION
+# -----------------------
+def regime_for_bar(i):
     score = 0
 
-    trend = spy["Close"].iloc[-1] > spy["ma20"].iloc[-1]
-    vol_ok = spy["vol20"].iloc[-1] < spy["vol20"].median()
-    yc_ok = yield_curve.iloc[-1] > 0
-    credit_ok = credit_ratio.iloc[-1] > credit_ratio.median()
-    vix_ok = vix["Close"].iloc[-1] < 25
-
-    components = {
-        "Trend": trend,
-        "Volatility": vol_ok,
-        "YieldCurve": yc_ok,
-        "Credit": credit_ok,
-        "VIX": vix_ok
-    }
-
-    score = sum(components.values())
+    if spy["Close"].iloc[i] > spy["ma20"].iloc[i]:
+        score += 1
+    if spy["vol20"].iloc[i] < spy["vol20"].median():
+        score += 1
+    if yield_curve.iloc[i] > 0:
+        score += 1
+    if credit_ratio.iloc[i] > credit_ratio.median():
+        score += 1
+    if vix["Close"].iloc[i] < 25:
+        score += 1
 
     if score >= 4:
-        regime = "RISK-ON"
-        color = "rgba(0,255,0,0.55)"   # strong green
+        return "RISK-ON", "rgba(0,255,0,0.35)"
     elif score >= 2:
-        regime = "NEUTRAL"
-        color = "rgba(255,165,0,0.55)" # strong orange
+        return "NEUTRAL", "rgba(255,165,0,0.35)"
     else:
-        regime = "RISK-OFF"
-        color = "rgba(255,0,0,0.60)"   # strong red
+        return "DEFENSIVE", "rgba(255,0,0,0.40)"
 
-    return regime, score, color, components
+# current regime
+current_regime, current_color = regime_for_bar(-1)
 
-
-spy_regime, spy_score, spy_color, spy_components = compute_regime()
-
-# -------------------------
-# CANDLE PLOT
-# -------------------------
-def plot_candles(df, regime_color):
+# -----------------------
+# PLOT FUNCTION
+# -----------------------
+def plot_candles(df):
     fig = go.Figure()
+
+    # Background bands per regime period
+    for i in range(len(df)-1):
+        regime, color = regime_for_bar(i)
+        fig.add_vrect(
+            x0=df.index[i],
+            x1=df.index[i+1],
+            fillcolor=color,
+            opacity=0.45,
+            layer="below",
+            line_width=0
+        )
 
     fig.add_trace(go.Candlestick(
         x=df.index,
@@ -118,7 +115,7 @@ def plot_candles(df, regime_color):
         close=df["Close"],
         increasing_line_color="lime",
         decreasing_line_color="red",
-        increasing_fillcolor="rgba(0,0,0,0)",  # hollow
+        increasing_fillcolor="rgba(0,0,0,0)",
         decreasing_fillcolor="rgba(0,0,0,0)",
         line_width=2
     ))
@@ -131,91 +128,60 @@ def plot_candles(df, regime_color):
         height=450
     )
 
-    # Strong full background regime
-    fig.add_vrect(
-        x0=df.index.min(),
-        x1=df.index.max(),
-        fillcolor=regime_color,
-        opacity=0.6,
-        layer="below",
-        line_width=0
-    )
-
     return fig
 
-
-# -------------------------
+# -----------------------
 # LAYOUT
-# -------------------------
+# -----------------------
 col1, col2 = st.columns(2)
 
 with col1:
     st.subheader("SPY Immune System")
+    st.write(f"**Regime:** {current_regime}")
 
-    st.write(f"**Regime:** {spy_regime}")
-    st.write(f"**Score:** {spy_score} / 5")
+    score_now = sum([
+        spy["Close"].iloc[-1] > spy["ma20"].iloc[-1],
+        spy["vol20"].iloc[-1] < spy["vol20"].median(),
+        yield_curve.iloc[-1] > 0,
+        credit_ratio.iloc[-1] > credit_ratio.median(),
+        vix["Close"].iloc[-1] < 25
+    ])
+
+    st.write(f"**Score:** {score_now}/5")
     st.write(f"**VIX:** {vix['Close'].iloc[-1]:.2f}")
-    st.write(f"**Credit Ratio (HYG/LQD):** {credit_ratio.iloc[-1]:.3f}")
-    st.write(f"**Yield Curve (10Y-3M):** {yield_curve.iloc[-1]:.2f}")
+    st.write(f"**Credit Ratio:** {credit_ratio.iloc[-1]:.3f}")
+    st.write(f"**Yield Curve:** {yield_curve.iloc[-1]:.2f}")
     st.write(f"**SPY 20D Vol:** {spy['vol20'].iloc[-1]:.2%}")
 
-    st.plotly_chart(plot_candles(spy, spy_color), use_container_width=True)
+    st.plotly_chart(plot_candles(spy), use_container_width=True)
 
 with col2:
     st.subheader("BTC Immune System")
 
     btc_trend = btc["Close"].iloc[-1] > btc["ma20"].iloc[-1]
-    btc_vol_ok = btc["vol20"].iloc[-1] < btc["vol20"].median()
-    btc_score = int(btc_trend) + int(btc_vol_ok)
+    btc_vol = btc["vol20"].iloc[-1] < btc["vol20"].median()
+    btc_score = int(btc_trend) + int(btc_vol)
 
-    st.write(f"**Trend Positive:** {btc_trend}")
-    st.write(f"**Volatility Controlled:** {btc_vol_ok}")
-    st.write(f"**Score:** {btc_score} / 2")
+    btc_regime = "RISK-ON" if btc_score == 2 else "DEFENSIVE"
 
-    st.plotly_chart(plot_candles(btc, spy_color), use_container_width=True)
+    st.write(f"**Regime:** {btc_regime}")
+    st.write(f"**Score:** {btc_score}/2")
+    st.write(f"**BTC 20D Vol:** {btc['vol20'].iloc[-1]:.2%}")
 
-# -------------------------
+    st.plotly_chart(plot_candles(btc), use_container_width=True)
+
+# -----------------------
 # INTERPRETATION
-# -------------------------
+# -----------------------
 st.markdown("---")
-st.header("Interpretation")
+st.header("How to Interpret")
 
-st.markdown("### Regime Score")
+st.write(f"**Score ({score_now}/5):** Composite immune alignment across trend, volatility, credit, yield curve, and VIX.")
 
-if spy_score >= 4:
-    st.write("High systemic alignment across macro + technical factors. Broad risk exposure statistically favored.")
-elif spy_score >= 2:
-    st.write("Mixed signals. Market internally unstable or transitioning.")
-else:
-    st.write("Multiple stress indicators active. Defensive posture statistically favored.")
+st.write("**VIX:** Measures implied volatility. Elevated readings signal systemic stress.")
 
-st.markdown("### VIX")
+st.write("**Credit Ratio (HYG/LQD):** Risk appetite gauge. Rising ratio = capital flowing into high yield.")
 
-v = vix["Close"].iloc[-1]
-if v < 18:
-    st.write("Volatility compression regime. Risk appetite strong.")
-elif v < 25:
-    st.write("Moderate volatility. Normalized risk.")
-else:
-    st.write("Elevated volatility. Market stress conditions present.")
+st.write("**Yield Curve (10Y-3M):** Inversion historically precedes recessionary slowdowns.")
 
-st.markdown("### Credit Ratio (HYG/LQD)")
-
-if credit_ratio.iloc[-1] > credit_ratio.median():
-    st.write("Credit spreads tightening → capital flowing into risk debt.")
-else:
-    st.write("Credit spreads widening → risk aversion increasing.")
-
-st.markdown("### Yield Curve")
-
-if yield_curve.iloc[-1] > 0:
-    st.write("Positive slope → economic expansion bias.")
-else:
-    st.write("Inversion → recession probability elevated.")
-
-st.markdown("### SPY 20D Realized Volatility")
-
-if spy["vol20"].iloc[-1] < spy["vol20"].median():
-    st.write("Volatility subdued → stable market regime.")
-else:
-    st.write("Volatility elevated → unstable price dynamics.")
+st.write("**SPY 20D Vol:** Realized volatility regime. Expanding vol increases drawdown risk.")
