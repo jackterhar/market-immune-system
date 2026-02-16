@@ -13,53 +13,30 @@ LOOKBACK_YEARS = 10
 
 
 # ================================
-# SAFE DOWNLOAD FUNCTION
+# MACRO DOWNLOAD (FORCE SERIES)
 # ================================
 
-@st.cache_data
-def load_data():
+def download_series(ticker, start, end):
+    data = yf.download(ticker, start=start, end=end, progress=False)
 
-    end = datetime.today()
-    start = datetime(end.year - LOOKBACK_YEARS, end.month, end.day)
-
-    spy = yf.download(
-        "SPY",
-        start=start,
-        end=end,
-        auto_adjust=False,
-        group_by="column",
-        progress=False,
-    )
-
-    if spy.empty:
-        st.error("SPY data failed to download.")
+    if data.empty:
+        st.error(f"{ticker} failed to download")
         st.stop()
 
-    # Flatten MultiIndex if needed
-    if isinstance(spy.columns, pd.MultiIndex):
-        spy.columns = spy.columns.get_level_values(0)
+    if isinstance(data, pd.DataFrame):
+        if "Close" in data.columns:
+            return data["Close"]
+        else:
+            return data.iloc[:, 0]
 
-    # Standardize column names
-    spy.columns = [c.capitalize() for c in spy.columns]
-
-    required = ["Open", "High", "Low", "Close", "Volume"]
-    missing = [c for c in required if c not in spy.columns]
-
-    if missing:
-        st.error(f"Missing columns from SPY data: {missing}")
-        st.stop()
-
-    # Download macro data
-    vix = yf.download("^VIX", start=start, end=end, progress=False)["Close"]
-    hyg = yf.download("HYG", start=start, end=end, progress=False)["Close"]
-    lqd = yf.download("LQD", start=start, end=end, progress=False)["Close"]
-    tnx = yf.download("^TNX", start=start, end=end, progress=False)["Close"] / 10
-    irx = yf.download("^IRX", start=start, end=end, progress=False)["Close"] / 10
-
-    return spy, vix, hyg, lqd, tnx, irx
+    return data
 
 
-spy, vix, hyg, lqd, tnx, irx = load_data()
+vix = download_series("^VIX", start, end)
+hyg = download_series("HYG", start, end)
+lqd = download_series("LQD", start, end)
+tnx = download_series("^TNX", start, end) / 10
+irx = download_series("^IRX", start, end) / 10
 
 # ================================
 # RESAMPLE
