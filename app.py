@@ -80,21 +80,41 @@ tnx = tnx.resample(RESAMPLE_RULE).last()
 irx = irx.resample(RESAMPLE_RULE).last()
 
 # ================================
-# INDICATORS
+# INDICATORS (STRUCTURALLY SAFE)
 # ================================
 
 spy["Return"] = spy["Close"].pct_change()
-spy["Vol20"] = spy["Return"].rolling(4).std() * np.sqrt(52)
 
-yield_curve = tnx - irx
-credit_ratio = hyg / lqd
+df = pd.DataFrame(index=spy.index)
 
-score = (
-    (yield_curve > 0).astype(int)
-    + (vix < 25).astype(int)
-    + (credit_ratio > credit_ratio.rolling(20).mean()).astype(int)
-    + (spy["Vol20"] < spy["Vol20"].rolling(20).mean()).astype(int)
+df["YieldCurve"] = (tnx - irx)
+df["VIX"] = vix
+df["CreditRatio"] = hyg / lqd
+df["Vol20"] = spy["Return"].rolling(4).std() * np.sqrt(52)
+
+df = df.dropna()
+
+df["Score"] = (
+    (df["YieldCurve"] > 0).astype(int)
+    + (df["VIX"] < 25).astype(int)
+    + (df["CreditRatio"] > df["CreditRatio"].rolling(20).mean()).astype(int)
+    + (df["Vol20"] < df["Vol20"].rolling(20).mean()).astype(int)
 )
+
+# Vectorized regime classification (NO APPLY)
+df["Regime"] = np.select(
+    [
+        df["Score"] >= 3,
+        df["Score"] == 2
+    ],
+    [
+        "Risk On",
+        "Neutral"
+    ],
+    default="Risk Off"
+)
+
+regime = df["Regime"]
 
 def classify(x):
     if x >= 3:
