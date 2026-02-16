@@ -6,18 +6,14 @@ import plotly.graph_objects as go
 from datetime import datetime
 
 st.set_page_config(layout="wide")
-
 st.title("🧬 Market Immune System (Test Version)")
 
-# ================================
-# SETTINGS
-# ================================
-
-RESAMPLE_RULE = "W"   # Weekly candles
+RESAMPLE_RULE = "W"
 LOOKBACK_YEARS = 10
 
+
 # ================================
-# DATA DOWNLOAD
+# SAFE DOWNLOAD FUNCTION
 # ================================
 
 @st.cache_data
@@ -26,27 +22,47 @@ def load_data():
     end = datetime.today()
     start = datetime(end.year - LOOKBACK_YEARS, end.month, end.day)
 
-    spy = yf.download("SPY", start=start, end=end, auto_adjust=False)
-    vix = yf.download("^VIX", start=start, end=end)["Close"]
-    hyg = yf.download("HYG", start=start, end=end)["Close"]
-    lqd = yf.download("LQD", start=start, end=end)["Close"]
-    dgs10 = yf.download("^TNX", start=start, end=end)["Close"] / 10
-    dgs2 = yf.download("^IRX", start=start, end=end)["Close"] / 10
+    spy = yf.download(
+        "SPY",
+        start=start,
+        end=end,
+        auto_adjust=False,
+        group_by="column",
+        progress=False,
+    )
 
-    # Validate columns
-    required_cols = ["Open", "High", "Low", "Close", "Volume"]
-    for col in required_cols:
-        if col not in spy.columns:
-            st.error(f"Missing SPY column: {col}")
-            st.stop()
+    if spy.empty:
+        st.error("SPY data failed to download.")
+        st.stop()
 
-    return spy, vix, hyg, lqd, dgs10, dgs2
+    # Flatten MultiIndex if needed
+    if isinstance(spy.columns, pd.MultiIndex):
+        spy.columns = spy.columns.get_level_values(0)
+
+    # Standardize column names
+    spy.columns = [c.capitalize() for c in spy.columns]
+
+    required = ["Open", "High", "Low", "Close", "Volume"]
+    missing = [c for c in required if c not in spy.columns]
+
+    if missing:
+        st.error(f"Missing columns from SPY data: {missing}")
+        st.stop()
+
+    # Download macro data
+    vix = yf.download("^VIX", start=start, end=end, progress=False)["Close"]
+    hyg = yf.download("HYG", start=start, end=end, progress=False)["Close"]
+    lqd = yf.download("LQD", start=start, end=end, progress=False)["Close"]
+    tnx = yf.download("^TNX", start=start, end=end, progress=False)["Close"] / 10
+    irx = yf.download("^IRX", start=start, end=end, progress=False)["Close"] / 10
+
+    return spy, vix, hyg, lqd, tnx, irx
 
 
-spy, vix, hyg, lqd, dgs10, dgs2 = load_data()
+spy, vix, hyg, lqd, tnx, irx = load_data()
 
 # ================================
-# RESAMPLE OHLC PROPERLY
+# RESAMPLE
 # ================================
 
 spy = spy.resample(RESAMPLE_RULE).agg({
@@ -60,114 +76,96 @@ spy = spy.resample(RESAMPLE_RULE).agg({
 vix = vix.resample(RESAMPLE_RULE).last()
 hyg = hyg.resample(RESAMPLE_RULE).last()
 lqd = lqd.resample(RESAMPLE_RULE).last()
-dgs10 = dgs10.resample(RESAMPLE_RULE).last()
-dgs2 = dgs2.resample(RESAMPLE_RULE).last()
+tnx = tnx.resample(RESAMPLE_RULE).last()
+irx = irx.resample(RESAMPLE_RULE).last()
 
 # ================================
 # INDICATORS
 # ================================
 
 spy["Return"] = spy["Close"].pct_change()
-spy["20D Vol"] = spy["Return"].rolling(4).std() * np.sqrt(52)
+spy["Vol20"] = spy["Return"].rolling(4).std() * np.sqrt(52)
 
-yield_curve = dgs10 - dgs2
+yield_curve = tnx - irx
 credit_ratio = hyg / lqd
 
 score = (
-    (yield_curve > 0).astype(int) +
-    (vix < 25).astype(int) +
-    (credit_ratio > credit_ratio.rolling(20).mean()).astype(int) +
-    (spy["20D Vol"] < spy["20D Vol"].rolling(20).mean()).astype(int)
+    (yield_curve > 0).astype(int)
+    + (vix < 25).astype(int)
+    + (credit_ratio > credit_ratio.rolling(20).mean()).astype(int)
+    + (spy["Vol20"] < spy["Vol20"].rolling(20).mean()).astype(int)
 )
 
-# ================================
-# REGIME CLASSIFICATION
-# ================================
-
-def classify_regime(s):
-    if s >= 3:
+def classify(x):
+    if x >= 3:
         return "Risk On"
-    elif s == 2:
+    elif x == 2:
         return "Neutral"
     else:
         return "Risk Off"
 
-regime = score.apply(classify_regime)
+regime = score.apply(classify)
 
 # ================================
-# PLOT
+# CHART
 # ================================
 
 fig = go.Figure()
 
-# Hollow Candles
 fig.add_trace(go.Candlestick(
     x=spy.index,
     open=spy["Open"],
     high=spy["High"],
     low=spy["Low"],
     close=spy["Close"],
-    increasing=dict(
-        line=dict(color="lime", width=2),
-        fillcolor="rgba(0,0,0,0)"
-    ),
-    decreasing=dict(
-        line=dict(color="red", width=2),
-        fillcolor="rgba(0,0,0,0)"
-    ),
+    increasing=dict(line=dict(color="lime", width=2), fillcolor="rgba(0,0,0,0)"),
+    decreasing=dict(line=dict(color="red", width=2), fillcolor="rgba(0,0,0,0)"),
     name="SPY"
 ))
 
-# ================================
-# STRONG REGIME BACKGROUND
-# ================================
-
 colors = {
-    "Risk On": "rgba(0,200,0,0.25)",
-    "Neutral": "rgba(255,200,0,0.25)",
-    "Risk Off": "rgba(200,0,0,0.25)"
+    "Risk On": "rgba(0,200,0,0.30)",
+    "Neutral": "rgba(255,200,0,0.30)",
+    "Risk Off": "rgba(200,0,0,0.30)"
 }
 
-last_regime = regime.iloc[0]
-start_date = regime.index[0]
+last = regime.iloc[0]
+start = regime.index[0]
 
 for i in range(1, len(regime)):
     current = regime.iloc[i]
     date = regime.index[i]
 
-    if current != last_regime:
-
+    if current != last:
         fig.add_vrect(
-            x0=start_date,
+            x0=start,
             x1=date,
-            fillcolor=colors[last_regime],
+            fillcolor=colors[last],
             layer="below",
             line_width=0
         )
+        start = date
+        last = current
 
-        start_date = date
-        last_regime = current
-
-# Add final segment
 fig.add_vrect(
-    x0=start_date,
+    x0=start,
     x1=regime.index[-1],
-    fillcolor=colors[last_regime],
+    fillcolor=colors[last],
     layer="below",
     line_width=0
 )
 
 fig.update_layout(
+    template="plotly_dark",
     height=700,
     xaxis_rangeslider_visible=False,
-    template="plotly_dark",
-    title="SPY with Market Regime Overlay"
+    title="SPY with Regime Overlay"
 )
 
 st.plotly_chart(fig, use_container_width=True)
 
 # ================================
-# INTERPRETATION SECTION
+# INTERPRETATION
 # ================================
 
 st.markdown("---")
@@ -175,32 +173,30 @@ st.header("📊 Interpretation Guide")
 
 st.markdown("""
 ### 🧬 Immune Score
-- **4** → Strong systemic health (risk assets supported)
-- **3** → Healthy but monitor
-- **2** → Neutral / Transition
-- **1–0** → Defensive posture warranted
+0–1 → Defensive  
+2 → Neutral  
+3–4 → Risk On  
 
-### 📉 VIX (Volatility Index)
-- **< 20** → Calm markets
-- **20–30** → Elevated stress
-- **> 30** → Crisis regime
+### 📉 VIX
+<20 → Calm  
+20–30 → Stress  
+>30 → Crisis  
 
 ### 🏦 Credit Ratio (HYG / LQD)
-- Rising → Investors favor high-yield → Risk appetite strong  
-- Falling → Flight to quality → Credit stress building
+Rising → Risk appetite strong  
+Falling → Credit stress  
 
 ### 📈 Yield Curve (10Y − 2Y)
-- Positive → Expansionary conditions  
-- Flat → Late-cycle risk  
-- Negative → Recession probability elevated
+Positive → Expansion  
+Flat → Late cycle  
+Negative → Recession risk  
 
-### 📊 SPY 20D Volatility
-- Below 6% → Stable regime  
-- 6–12% → Elevated but normal  
-- > 12% → Instability / drawdown environment
+### 📊 SPY 20D Vol
+Low → Stable  
+High → Instability  
 
-### 🎯 Regime Labels
-- **Risk On** → Favor equities, cyclicals  
-- **Neutral** → Balanced allocation  
-- **Risk Off** → Defensive assets favored  
+### 🎯 Regimes
+Risk On → Favor equities  
+Neutral → Balanced  
+Risk Off → Defensive posture  
 """)
