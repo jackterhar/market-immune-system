@@ -12,15 +12,16 @@ RESAMPLE_RULE = "W"
 LOOKBACK_YEARS = 10
 
 
-# ================================
-# MACRO DOWNLOAD (FORCE SERIES)
-# ================================
+# =====================================================
+# SAFE DOWNLOAD HELPERS
+# =====================================================
 
+@st.cache_data
 def download_series(ticker, start, end):
     data = yf.download(ticker, start=start, end=end, progress=False)
 
     if data.empty:
-        st.error(f"{ticker} failed to download")
+        st.error(f"{ticker} failed to download.")
         st.stop()
 
     if isinstance(data, pd.DataFrame):
@@ -32,15 +33,57 @@ def download_series(ticker, start, end):
     return data
 
 
+@st.cache_data
+def download_spy(start, end):
+    spy = yf.download(
+        "SPY",
+        start=start,
+        end=end,
+        auto_adjust=False,
+        group_by="column",
+        progress=False,
+    )
+
+    if spy.empty:
+        st.error("SPY failed to download.")
+        st.stop()
+
+    # Flatten MultiIndex if needed
+    if isinstance(spy.columns, pd.MultiIndex):
+        spy.columns = spy.columns.get_level_values(0)
+
+    # Standardize names
+    spy.columns = [c.capitalize() for c in spy.columns]
+
+    required = ["Open", "High", "Low", "Close", "Volume"]
+    missing = [c for c in required if c not in spy.columns]
+
+    if missing:
+        st.error(f"Missing SPY columns: {missing}")
+        st.stop()
+
+    return spy
+
+
+# =====================================================
+# LOAD DATA
+# =====================================================
+
+end = datetime.today()
+start = datetime(end.year - LOOKBACK_YEARS, end.month, end.day)
+
+spy = download_spy(start, end)
+
 vix = download_series("^VIX", start, end)
 hyg = download_series("HYG", start, end)
 lqd = download_series("LQD", start, end)
 tnx = download_series("^TNX", start, end) / 10
 irx = download_series("^IRX", start, end) / 10
 
-# ================================
+
+# =====================================================
 # RESAMPLE
-# ================================
+# =====================================================
 
 spy = spy.resample(RESAMPLE_RULE).agg({
     "Open": "first",
@@ -56,15 +99,16 @@ lqd = lqd.resample(RESAMPLE_RULE).last()
 tnx = tnx.resample(RESAMPLE_RULE).last()
 irx = irx.resample(RESAMPLE_RULE).last()
 
-# ================================
-# INDICATORS (STRUCTURALLY SAFE)
-# ================================
+
+# =====================================================
+# INDICATORS (FULLY ALIGNED)
+# =====================================================
 
 spy["Return"] = spy["Close"].pct_change()
 
 df = pd.DataFrame(index=spy.index)
 
-df["YieldCurve"] = (tnx - irx)
+df["YieldCurve"] = tnx - irx
 df["VIX"] = vix
 df["CreditRatio"] = hyg / lqd
 df["Vol20"] = spy["Return"].rolling(4).std() * np.sqrt(52)
@@ -78,7 +122,6 @@ df["Score"] = (
     + (df["Vol20"] < df["Vol20"].rolling(20).mean()).astype(int)
 )
 
-# Vectorized regime classification (NO APPLY)
 df["Regime"] = np.select(
     [
         df["Score"] >= 3,
@@ -93,19 +136,10 @@ df["Regime"] = np.select(
 
 regime = df["Regime"]
 
-def classify(x):
-    if x >= 3:
-        return "Risk On"
-    elif x == 2:
-        return "Neutral"
-    else:
-        return "Risk Off"
 
-regime = score.apply(classify)
-
-# ================================
+# =====================================================
 # CHART
-# ================================
+# =====================================================
 
 fig = go.Figure()
 
@@ -126,28 +160,28 @@ colors = {
     "Risk Off": "rgba(200,0,0,0.30)"
 }
 
-last = regime.iloc[0]
-start = regime.index[0]
+last_regime = regime.iloc[0]
+start_date = regime.index[0]
 
 for i in range(1, len(regime)):
     current = regime.iloc[i]
     date = regime.index[i]
 
-    if current != last:
+    if current != last_regime:
         fig.add_vrect(
-            x0=start,
+            x0=start_date,
             x1=date,
-            fillcolor=colors[last],
+            fillcolor=colors[last_regime],
             layer="below",
             line_width=0
         )
-        start = date
-        last = current
+        start_date = date
+        last_regime = current
 
 fig.add_vrect(
-    x0=start,
+    x0=start_date,
     x1=regime.index[-1],
-    fillcolor=colors[last],
+    fillcolor=colors[last_regime],
     layer="below",
     line_width=0
 )
@@ -156,14 +190,15 @@ fig.update_layout(
     template="plotly_dark",
     height=700,
     xaxis_rangeslider_visible=False,
-    title="SPY with Regime Overlay"
+    title="SPY with Market Regime Overlay"
 )
 
 st.plotly_chart(fig, use_container_width=True)
 
-# ================================
-# INTERPRETATION
-# ================================
+
+# =====================================================
+# INTERPRETATION GUIDE
+# =====================================================
 
 st.markdown("---")
 st.header("📊 Interpretation Guide")
@@ -171,29 +206,30 @@ st.header("📊 Interpretation Guide")
 st.markdown("""
 ### 🧬 Immune Score
 0–1 → Defensive  
-2 → Neutral  
+2 → Neutral / Transition  
 3–4 → Risk On  
 
 ### 📉 VIX
 <20 → Calm  
-20–30 → Stress  
->30 → Crisis  
+20–30 → Stress building  
+>30 → Crisis regime  
 
 ### 🏦 Credit Ratio (HYG / LQD)
-Rising → Risk appetite strong  
-Falling → Credit stress  
+Rising → Investors favor high-yield (risk appetite strong)  
+Falling → Flight to quality (credit stress)
 
 ### 📈 Yield Curve (10Y − 2Y)
-Positive → Expansion  
+Positive → Expansionary environment  
 Flat → Late cycle  
-Negative → Recession risk  
+Negative → Recession probability elevated  
 
-### 📊 SPY 20D Vol
-Low → Stable  
-High → Instability  
+### 📊 SPY 20D Volatility
+Low → Stable market  
+Moderate → Normal fluctuations  
+High → Instability / drawdown environment  
 
-### 🎯 Regimes
-Risk On → Favor equities  
-Neutral → Balanced  
-Risk Off → Defensive posture  
+### 🎯 Regime Meaning
+Risk On → Favor equities & cyclicals  
+Neutral → Balanced allocation  
+Risk Off → Defensive assets favored  
 """)
