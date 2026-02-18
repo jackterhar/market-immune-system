@@ -8,252 +8,232 @@ from datetime import datetime
 st.set_page_config(layout="wide")
 st.title("🧬 Market Immune System (Test Version)")
 
-RESAMPLE_RULE = "W"
-LOOKBACK_YEARS = 10
+# ==========================
+# PARAMETERS
+# ==========================
 
-
-# =====================================================
-# SAFE DOWNLOAD HELPERS
-# =====================================================
-
-@st.cache_data
-def download_spy(start, end):
-    spy = yf.download(
-        "SPY",
-        start=start,
-        end=end,
-        auto_adjust=False,
-        progress=False
-    )
-
-    if spy.empty:
-        st.error("SPY download failed.")
-        st.stop()
-
-    # Flatten MultiIndex if necessary
-    if isinstance(spy.columns, pd.MultiIndex):
-        spy.columns = spy.columns.get_level_values(0)
-
-    spy.columns = [c.capitalize() for c in spy.columns]
-
-    required = ["Open", "High", "Low", "Close", "Volume"]
-    for col in required:
-        if col not in spy.columns:
-            st.error(f"Missing SPY column: {col}")
-            st.stop()
-
-    return spy
-
-
-@st.cache_data
-def download_close_series(ticker, start, end):
-    data = yf.download(ticker, start=start, end=end, progress=False)
-
-    if data.empty:
-        st.error(f"{ticker} download failed.")
-        st.stop()
-
-    if isinstance(data.columns, pd.MultiIndex):
-        data.columns = data.columns.get_level_values(0)
-
-    if "Close" in data.columns:
-        series = data["Close"]
-    else:
-        series = data.iloc[:, 0]
-
-    return series
-
-
-# =====================================================
-# LOAD DATA
-# =====================================================
+CALC_YEARS = 10
+DISPLAY_MONTHS = 12
+RESAMPLE_RULE = "W-FRI"
 
 end = datetime.today()
-start = datetime(end.year - LOOKBACK_YEARS, end.month, end.day)
+start = datetime(end.year - CALC_YEARS, end.month, end.day)
 
-spy = download_spy(start, end)
+# ==========================
+# SAFE DOWNLOAD FUNCTION
+# ==========================
 
-vix = download_close_series("^VIX", start, end)
-hyg = download_close_series("HYG", start, end)
-lqd = download_close_series("LQD", start, end)
-tnx = download_close_series("^TNX", start, end) / 10
-irx = download_close_series("^IRX", start, end) / 10
+def download_series(ticker):
+    df = yf.download(ticker, start=start, end=end, auto_adjust=True, progress=False)
+    if df.empty:
+        st.error(f"No data for {ticker}")
+        st.stop()
+    if "Close" not in df.columns:
+        st.error(f"{ticker} missing Close column")
+        st.stop()
+    return df["Close"]
 
+def resample_series(series):
+    return series.resample(RESAMPLE_RULE).last().dropna()
 
-# =====================================================
-# RESAMPLE (FORCE SERIES SHAPE)
-# =====================================================
+# ==========================
+# DOWNLOAD DATA
+# ==========================
 
-spy = spy.resample(RESAMPLE_RULE).agg({
-    "Open": "first",
-    "High": "max",
-    "Low": "min",
-    "Close": "last",
-    "Volume": "sum"
-}).dropna()
+spy = resample_series(download_series("SPY"))
+btc = resample_series(download_series("BTC-USD"))
+hyg = resample_series(download_series("HYG"))
+lqd = resample_series(download_series("LQD"))
 
+# Align index safely
+common_index = spy.index.intersection(btc.index)
+common_index = common_index.intersection(hyg.index)
+common_index = common_index.intersection(lqd.index)
 
-def resample_to_series(s):
-    s = s.resample(RESAMPLE_RULE).last()
-    if isinstance(s, pd.DataFrame):
-        if "Close" in s.columns:
-            return s["Close"]
-        return s.iloc[:, 0]
-    return s
-
-
-vix = resample_to_series(vix)
-hyg = resample_to_series(hyg)
-lqd = resample_to_series(lqd)
-tnx = resample_to_series(tnx)
-irx = resample_to_series(irx)
-
-
-# =====================================================
-# ALIGN ALL DATA TO SPY INDEX
-# =====================================================
-
-common_index = spy.index
-
-vix = vix.reindex(common_index)
+spy = spy.reindex(common_index)
+btc = btc.reindex(common_index)
 hyg = hyg.reindex(common_index)
 lqd = lqd.reindex(common_index)
-tnx = tnx.reindex(common_index)
-irx = irx.reindex(common_index)
 
-
-# =====================================================
-# INDICATORS (STRUCTURALLY GUARANTEED)
-# =====================================================
-
-spy["Return"] = spy["Close"].pct_change()
+# ==========================
+# BUILD DATAFRAME
+# ==========================
 
 df = pd.DataFrame(index=common_index)
-
-df["YieldCurve"] = tnx - irx
-df["VIX"] = vix
+df["SPY"] = spy
+df["BTC"] = btc
 df["CreditRatio"] = hyg / lqd
-df["Vol20"] = spy["Return"].rolling(4).std() * np.sqrt(52)
 
-df = df.dropna()
+# ==========================
+# INDICATORS
+# ==========================
 
-df["Score"] = (
-    (df["YieldCurve"] > 0).astype(int)
-    + (df["VIX"] < 25).astype(int)
-    + (df["CreditRatio"] > df["CreditRatio"].rolling(20).mean()).astype(int)
-    + (df["Vol20"] < df["Vol20"].rolling(20).mean()).astype(int)
+df["SPY_MA"] = df["SPY"].rolling(20).mean()
+df["SPY_Trend"] = np.where(df["SPY"] > df["SPY_MA"], 1, -1)
+
+df["Credit_MA"] = df["CreditRatio"].rolling(20).mean()
+df["Credit_Trend"] = np.where(df["CreditRatio"] > df["Credit_MA"], 1, -1)
+
+df["BTC_MA"] = df["BTC"].rolling(20).mean()
+df["BTC_Trend"] = np.where(df["BTC"] > df["BTC_MA"], 1, -1)
+
+# ==========================
+# COMPOSITE SCORE
+# ==========================
+
+df["Score"] = df["SPY_Trend"] + df["Credit_Trend"]
+
+def classify(score):
+    if score == 2:
+        return "Risk-On"
+    elif score == -2:
+        return "Risk-Off"
+    else:
+        return "Transition"
+
+df["Regime"] = df["Score"].apply(classify)
+
+def classify_btc(trend):
+    return "Bull" if trend == 1 else "Bear"
+
+df["BTC_Regime"] = df["BTC_Trend"].apply(classify_btc)
+
+# ==========================
+# LIQUIDITY TRAP DETECTOR
+# ==========================
+
+df["SPY_RSI"] = (
+    df["SPY"].diff()
+    .pipe(lambda x: x.where(x > 0, 0).rolling(14).mean()) /
+    df["SPY"].diff().abs().rolling(14).mean()
+) * 100
+
+df["LiquidityTrap"] = (
+    (df["Regime"] == "Risk-Off") &
+    (df["SPY_RSI"] < 30)
 )
 
-df["Regime"] = np.select(
-    [
-        df["Score"] >= 3,
-        df["Score"] == 2
-    ],
-    [
-        "Risk On",
-        "Neutral"
-    ],
-    default="Risk Off"
-)
+# ==========================
+# CRYPTOQUANT PLACEHOLDER
+# ==========================
 
-regime = df["Regime"]
+# Replace this with real API pull later
+np.random.seed(42)
+df["MCapGrowth"] = np.random.normal(0, 0.02, len(df)).cumsum()
+df["RealizedCapGrowth"] = np.random.normal(0, 0.015, len(df)).cumsum()
 
+df["MCapSpread"] = df["MCapGrowth"] - df["RealizedCapGrowth"]
 
-# =====================================================
-# PLOT
-# =====================================================
+# ==========================
+# DISPLAY WINDOW
+# ==========================
 
-fig = go.Figure()
+display_start = df.index.max() - pd.DateOffset(months=DISPLAY_MONTHS)
+display = df.loc[display_start:]
 
-fig.add_trace(go.Candlestick(
-    x=spy.index,
-    open=spy["Open"],
-    high=spy["High"],
-    low=spy["Low"],
-    close=spy["Close"],
-    increasing=dict(line=dict(color="lime", width=2), fillcolor="rgba(0,0,0,0)"),
-    decreasing=dict(line=dict(color="red", width=2), fillcolor="rgba(0,0,0,0)"),
+# ==========================
+# SPY CHART
+# ==========================
+
+spy_fig = go.Figure()
+
+spy_fig.add_trace(go.Scatter(
+    x=display.index,
+    y=display["SPY"],
+    mode="lines",
     name="SPY"
 ))
 
-colors = {
-    "Risk On": "rgba(0,200,0,0.35)",
-    "Neutral": "rgba(255,200,0,0.35)",
-    "Risk Off": "rgba(200,0,0,0.35)"
-}
+# Regime shading
+for i in range(1, len(display)):
+    if display["Regime"].iloc[i] == "Risk-Off":
+        spy_fig.add_vrect(
+            x0=display.index[i-1],
+            x1=display.index[i],
+            fillcolor="red",
+            opacity=0.08,
+            line_width=0
+        )
 
-if not regime.empty:
+# Liquidity trap markers
+trap_points = display[display["LiquidityTrap"]]
 
-    last_regime = regime.iloc[0]
-    start_date = regime.index[0]
+spy_fig.add_trace(go.Scatter(
+    x=trap_points.index,
+    y=trap_points["SPY"],
+    mode="markers",
+    marker=dict(size=8),
+    name="Liquidity Trap"
+))
 
-    for i in range(1, len(regime)):
-        current = regime.iloc[i]
-        date = regime.index[i]
-
-        if current != last_regime:
-            fig.add_vrect(
-                x0=start_date,
-                x1=date,
-                fillcolor=colors[last_regime],
-                layer="below",
-                line_width=0
-            )
-            start_date = date
-            last_regime = current
-
-    fig.add_vrect(
-        x0=start_date,
-        x1=regime.index[-1],
-        fillcolor=colors[last_regime],
-        layer="below",
-        line_width=0
-    )
-
-fig.update_layout(
+spy_fig.update_layout(
     template="plotly_dark",
-    height=750,
-    xaxis_rangeslider_visible=False,
-    title="SPY with Market Regime Overlay"
+    height=500,
+    title="SPY (12 Month Regime View)"
 )
 
-st.plotly_chart(fig, use_container_width=True)
+st.plotly_chart(spy_fig, use_container_width=True)
 
+# ==========================
+# BTC CHART
+# ==========================
 
-# =====================================================
-# INTERPRETATION GUIDE
-# =====================================================
+btc_fig = go.Figure()
+
+btc_fig.add_trace(go.Scatter(
+    x=display.index,
+    y=display["BTC"],
+    mode="lines",
+    name="BTC"
+))
+
+for i in range(1, len(display)):
+    if display["BTC_Regime"].iloc[i] == "Bear":
+        btc_fig.add_vrect(
+            x0=display.index[i-1],
+            x1=display.index[i],
+            fillcolor="orange",
+            opacity=0.08,
+            line_width=0
+        )
+
+btc_fig.update_layout(
+    template="plotly_dark",
+    height=500,
+    title="BTC (12 Month Regime View)"
+)
+
+st.plotly_chart(btc_fig, use_container_width=True)
+
+# ==========================
+# MCap vs Realized Cap Spread
+# ==========================
+
+spread_fig = go.Figure()
+
+spread_fig.add_trace(go.Scatter(
+    x=display.index,
+    y=display["MCapSpread"],
+    mode="lines",
+    name="Market Cap vs Realized Cap Spread"
+))
+
+spread_fig.update_layout(
+    template="plotly_dark",
+    height=400,
+    title="BTC Market Cap vs Realized Cap Growth Spread"
+)
+
+st.plotly_chart(spread_fig, use_container_width=True)
+
+# ==========================
+# SUMMARY PANEL
+# ==========================
 
 st.markdown("---")
-st.header("📊 Interpretation Guide")
 
-st.markdown("""
-### 🧬 Immune Score
-0–1 → Defensive  
-2 → Transitional / Mixed  
-3–4 → Risk-On environment  
+col1, col2, col3 = st.columns(3)
 
-### 📉 VIX
-<20 → Calm  
-20–30 → Stress building  
->30 → Crisis regime  
-
-### 🏦 Credit Ratio (HYG / LQD)
-Rising → Risk appetite strong  
-Falling → Credit stress increasing  
-
-### 📈 Yield Curve (10Y − 2Y)
-Positive → Expansionary  
-Flat → Late cycle  
-Negative → Recession probability elevated  
-
-### 📊 SPY 20D Volatility
-Low → Stable regime  
-Moderate → Normal fluctuations  
-High → Instability / drawdown risk  
-
-### 🎯 Regimes
-Risk On → Favor equities & cyclicals  
-Neutral → Balanced allocation  
-Risk Off → Defensive positioning  
-""")
+col1.metric("Current SPY Regime", display["Regime"].iloc[-1])
+col2.metric("Current BTC Regime", display["BTC_Regime"].iloc[-1])
+col3.metric("MCap Spread", round(display["MCapSpread"].iloc[-1], 4))
