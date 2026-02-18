@@ -8,19 +8,14 @@ from datetime import datetime
 st.set_page_config(layout="wide")
 st.title("🧬 Market Immune System (Test Version)")
 
-# ==========================
-# PARAMETERS
-# ==========================
-
 CALC_YEARS = 10
 DISPLAY_MONTHS = 12
-RESAMPLE_RULE = "W-FRI"
 
 end = datetime.today()
 start = datetime(end.year - CALC_YEARS, end.month, end.day)
 
 # ==========================
-# SAFE DOWNLOAD
+# DOWNLOAD FUNCTION (DAILY)
 # ==========================
 
 def download_series(ticker):
@@ -29,34 +24,31 @@ def download_series(ticker):
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
 
-    series = df["Close"].copy()
-    series.name = ticker
-    return series.resample(RESAMPLE_RULE).last().dropna()
+    return df["Close"].dropna()
 
 # ==========================
-# SPY + CREDIT SYSTEM (CORE)
+# CORE SYSTEM (DAILY)
 # ==========================
 
 spy = download_series("SPY")
 hyg = download_series("HYG")
 lqd = download_series("LQD")
 
-# Align credit only to SPY
-credit_index = spy.index.intersection(hyg.index).intersection(lqd.index)
+common = spy.index.intersection(hyg.index).intersection(lqd.index)
 
-spy = spy.loc[credit_index]
-hyg = hyg.loc[credit_index]
-lqd = lqd.loc[credit_index]
+spy = spy.loc[common]
+hyg = hyg.loc[common]
+lqd = lqd.loc[common]
 
-df = pd.DataFrame(index=credit_index)
+df = pd.DataFrame(index=common)
 df["SPY"] = spy
 df["CreditRatio"] = hyg / lqd
 
-# Indicators
+# Indicators (Daily)
 df["SPY_MA"] = df["SPY"].rolling(20).mean()
-df["SPY_Trend"] = np.where(df["SPY"] > df["SPY_MA"], 1, -1)
-
 df["Credit_MA"] = df["CreditRatio"].rolling(20).mean()
+
+df["SPY_Trend"] = np.where(df["SPY"] > df["SPY_MA"], 1, -1)
 df["Credit_Trend"] = np.where(df["CreditRatio"] > df["Credit_MA"], 1, -1)
 
 df["Score"] = df["SPY_Trend"] + df["Credit_Trend"]
@@ -71,10 +63,10 @@ def classify(x):
 
 df["Regime"] = df["Score"].apply(classify)
 
-# Liquidity trap
+# Liquidity Trap (RSI 14D)
 delta = df["SPY"].diff()
-gain = delta.where(delta > 0, 0)
-loss = -delta.where(delta < 0, 0)
+gain = delta.clip(lower=0)
+loss = -delta.clip(upper=0)
 rs = gain.rolling(14).mean() / loss.rolling(14).mean()
 df["RSI"] = 100 - (100 / (1 + rs))
 
@@ -84,7 +76,7 @@ df["LiquidityTrap"] = (
 )
 
 # ==========================
-# BTC (INDEPENDENT SYSTEM)
+# BTC SYSTEM (DAILY)
 # ==========================
 
 btc = download_series("BTC-USD")
@@ -92,21 +84,55 @@ btc = download_series("BTC-USD")
 btc_df = pd.DataFrame(index=btc.index)
 btc_df["BTC"] = btc
 btc_df["BTC_MA"] = btc_df["BTC"].rolling(20).mean()
-btc_df["BTC_Trend"] = np.where(btc_df["BTC"] > btc_df["BTC_MA"], 1, -1)
-btc_df["BTC_Regime"] = np.where(btc_df["BTC_Trend"] == 1, "Bull", "Bear")
+btc_df["BTC_Regime"] = np.where(
+    btc_df["BTC"] > btc_df["BTC_MA"],
+    "Bull",
+    "Bear"
+)
 
 # ==========================
-# DISPLAY WINDOWS
+# DISPLAY WINDOWS (12M)
 # ==========================
 
 display_start_spy = df.index.max() - pd.DateOffset(months=DISPLAY_MONTHS)
-display_spy = df.loc[display_start_spy:]
+display_spy = df.loc[display_start_spy:].copy()
 
 display_start_btc = btc_df.index.max() - pd.DateOffset(months=DISPLAY_MONTHS)
-display_btc = btc_df.loc[display_start_btc:]
+display_btc = btc_df.loc[display_start_btc:].copy()
 
 # ==========================
-# SPY CHART (RESTORED FEEL)
+# CLEAN REGIME BLOCK SHADING
+# ==========================
+
+def add_regime_blocks(fig, data, regime_col, color):
+    current_regime = data[regime_col].iloc[0]
+    start_idx = data.index[0]
+
+    for i in range(1, len(data)):
+        if data[regime_col].iloc[i] != current_regime:
+            if current_regime in ["Risk-Off", "Bear"]:
+                fig.add_vrect(
+                    x0=start_idx,
+                    x1=data.index[i],
+                    fillcolor=color,
+                    opacity=0.12,
+                    line_width=0
+                )
+            start_idx = data.index[i]
+            current_regime = data[regime_col].iloc[i]
+
+    # Final block
+    if current_regime in ["Risk-Off", "Bear"]:
+        fig.add_vrect(
+            x0=start_idx,
+            x1=data.index[-1],
+            fillcolor=color,
+            opacity=0.12,
+            line_width=0
+        )
+
+# ==========================
+# SPY CHART
 # ==========================
 
 spy_fig = go.Figure()
@@ -119,15 +145,7 @@ spy_fig.add_trace(go.Scatter(
     name="SPY"
 ))
 
-for i in range(1, len(display_spy)):
-    if display_spy["Regime"].iloc[i] == "Risk-Off":
-        spy_fig.add_vrect(
-            x0=display_spy.index[i-1],
-            x1=display_spy.index[i],
-            fillcolor="red",
-            opacity=0.12,
-            line_width=0
-        )
+add_regime_blocks(spy_fig, display_spy, "Regime", "red")
 
 trap = display_spy[display_spy["LiquidityTrap"]]
 
@@ -148,7 +166,7 @@ spy_fig.update_layout(
 st.plotly_chart(spy_fig, use_container_width=True)
 
 # ==========================
-# BTC CHART (CLEAN & SEPARATE)
+# BTC CHART
 # ==========================
 
 st.markdown("---")
@@ -164,15 +182,7 @@ btc_fig.add_trace(go.Scatter(
     name="BTC"
 ))
 
-for i in range(1, len(display_btc)):
-    if display_btc["BTC_Regime"].iloc[i] == "Bear":
-        btc_fig.add_vrect(
-            x0=display_btc.index[i-1],
-            x1=display_btc.index[i],
-            fillcolor="orange",
-            opacity=0.08,
-            line_width=0
-        )
+add_regime_blocks(btc_fig, display_btc, "BTC_Regime", "orange")
 
 btc_fig.update_layout(
     template="plotly_dark",
