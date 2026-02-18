@@ -20,113 +20,62 @@ end = datetime.today()
 start = datetime(end.year - CALC_YEARS, end.month, end.day)
 
 # ==========================
-# SAFE DOWNLOAD FUNCTION
+# SAFE DOWNLOAD
 # ==========================
 
-def download_clean_series(ticker):
+def download_series(ticker):
     df = yf.download(ticker, start=start, end=end, progress=False)
 
-    if df.empty:
-        st.error(f"No data returned for {ticker}")
-        st.stop()
-
-    # Handle MultiIndex columns
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
 
-    if "Close" not in df.columns:
-        st.error(f"{ticker} missing Close column")
-        st.stop()
-
     series = df["Close"].copy()
     series.name = ticker
-
-    # Force to true Series
-    if isinstance(series, pd.DataFrame):
-        series = series.iloc[:, 0]
-
-    return series
-
-def resample_series(series):
     return series.resample(RESAMPLE_RULE).last().dropna()
 
 # ==========================
-# DOWNLOAD DATA
+# SPY + CREDIT SYSTEM (CORE)
 # ==========================
 
-spy = resample_series(download_clean_series("SPY"))
-btc = resample_series(download_clean_series("BTC-USD"))
-hyg = resample_series(download_clean_series("HYG"))
-lqd = resample_series(download_clean_series("LQD"))
+spy = download_series("SPY")
+hyg = download_series("HYG")
+lqd = download_series("LQD")
 
-# ==========================
-# ALIGN INDEX SAFELY
-# ==========================
+# Align credit only to SPY
+credit_index = spy.index.intersection(hyg.index).intersection(lqd.index)
 
-common_index = spy.index
-common_index = common_index.intersection(btc.index)
-common_index = common_index.intersection(hyg.index)
-common_index = common_index.intersection(lqd.index)
+spy = spy.loc[credit_index]
+hyg = hyg.loc[credit_index]
+lqd = lqd.loc[credit_index]
 
-spy = spy.loc[common_index]
-btc = btc.loc[common_index]
-hyg = hyg.loc[common_index]
-lqd = lqd.loc[common_index]
+df = pd.DataFrame(index=credit_index)
+df["SPY"] = spy
+df["CreditRatio"] = hyg / lqd
 
-# ==========================
-# BUILD MASTER DATAFRAME
-# ==========================
-
-df = pd.DataFrame(index=common_index)
-df["SPY"] = spy.values
-df["BTC"] = btc.values
-df["HYG"] = hyg.values
-df["LQD"] = lqd.values
-
-df["CreditRatio"] = df["HYG"] / df["LQD"]
-
-# ==========================
-# INDICATORS
-# ==========================
-
+# Indicators
 df["SPY_MA"] = df["SPY"].rolling(20).mean()
 df["SPY_Trend"] = np.where(df["SPY"] > df["SPY_MA"], 1, -1)
 
 df["Credit_MA"] = df["CreditRatio"].rolling(20).mean()
 df["Credit_Trend"] = np.where(df["CreditRatio"] > df["Credit_MA"], 1, -1)
 
-df["BTC_MA"] = df["BTC"].rolling(20).mean()
-df["BTC_Trend"] = np.where(df["BTC"] > df["BTC_MA"], 1, -1)
-
-# ==========================
-# REGIME CLASSIFICATION
-# ==========================
-
 df["Score"] = df["SPY_Trend"] + df["Credit_Trend"]
 
-def classify(score):
-    if score == 2:
+def classify(x):
+    if x == 2:
         return "Risk-On"
-    elif score == -2:
+    elif x == -2:
         return "Risk-Off"
     else:
         return "Transition"
 
 df["Regime"] = df["Score"].apply(classify)
-df["BTC_Regime"] = np.where(df["BTC_Trend"] == 1, "Bull", "Bear")
 
-# ==========================
-# LIQUIDITY TRAP DETECTOR
-# ==========================
-
+# Liquidity trap
 delta = df["SPY"].diff()
 gain = delta.where(delta > 0, 0)
 loss = -delta.where(delta < 0, 0)
-
-avg_gain = gain.rolling(14).mean()
-avg_loss = loss.rolling(14).mean()
-
-rs = avg_gain / avg_loss
+rs = gain.rolling(14).mean() / loss.rolling(14).mean()
 df["RSI"] = 100 - (100 / (1 + rs))
 
 df["LiquidityTrap"] = (
@@ -135,79 +84,91 @@ df["LiquidityTrap"] = (
 )
 
 # ==========================
-# CRYPTOQUANT SPREAD PLACEHOLDER
+# BTC (INDEPENDENT SYSTEM)
 # ==========================
 
-np.random.seed(42)
-df["MCapGrowth"] = np.random.normal(0, 0.02, len(df)).cumsum()
-df["RealizedCapGrowth"] = np.random.normal(0, 0.015, len(df)).cumsum()
-df["MCapSpread"] = df["MCapGrowth"] - df["RealizedCapGrowth"]
+btc = download_series("BTC-USD")
+
+btc_df = pd.DataFrame(index=btc.index)
+btc_df["BTC"] = btc
+btc_df["BTC_MA"] = btc_df["BTC"].rolling(20).mean()
+btc_df["BTC_Trend"] = np.where(btc_df["BTC"] > btc_df["BTC_MA"], 1, -1)
+btc_df["BTC_Regime"] = np.where(btc_df["BTC_Trend"] == 1, "Bull", "Bear")
 
 # ==========================
-# DISPLAY WINDOW
+# DISPLAY WINDOWS
 # ==========================
 
-display_start = df.index.max() - pd.DateOffset(months=DISPLAY_MONTHS)
-display = df.loc[display_start:].copy()
+display_start_spy = df.index.max() - pd.DateOffset(months=DISPLAY_MONTHS)
+display_spy = df.loc[display_start_spy:]
+
+display_start_btc = btc_df.index.max() - pd.DateOffset(months=DISPLAY_MONTHS)
+display_btc = btc_df.loc[display_start_btc:]
 
 # ==========================
-# SPY CHART
+# SPY CHART (RESTORED FEEL)
 # ==========================
 
 spy_fig = go.Figure()
 
 spy_fig.add_trace(go.Scatter(
-    x=display.index,
-    y=display["SPY"],
+    x=display_spy.index,
+    y=display_spy["SPY"],
     mode="lines",
+    line=dict(width=2),
     name="SPY"
 ))
 
-for i in range(1, len(display)):
-    if display["Regime"].iloc[i] == "Risk-Off":
+for i in range(1, len(display_spy)):
+    if display_spy["Regime"].iloc[i] == "Risk-Off":
         spy_fig.add_vrect(
-            x0=display.index[i-1],
-            x1=display.index[i],
+            x0=display_spy.index[i-1],
+            x1=display_spy.index[i],
             fillcolor="red",
-            opacity=0.08,
+            opacity=0.12,
             line_width=0
         )
 
-trap = display[display["LiquidityTrap"]]
+trap = display_spy[display_spy["LiquidityTrap"]]
 
 spy_fig.add_trace(go.Scatter(
     x=trap.index,
     y=trap["SPY"],
     mode="markers",
+    marker=dict(size=6),
     name="Liquidity Trap"
 ))
 
 spy_fig.update_layout(
     template="plotly_dark",
-    height=500,
+    height=550,
     title="SPY (12M Regime View)"
 )
 
 st.plotly_chart(spy_fig, use_container_width=True)
 
 # ==========================
-# BTC CHART
+# BTC CHART (CLEAN & SEPARATE)
 # ==========================
+
+st.markdown("---")
+st.subheader("₿ Bitcoin")
 
 btc_fig = go.Figure()
 
 btc_fig.add_trace(go.Scatter(
-    x=display.index,
-    y=display["BTC"],
+    x=display_btc.index,
+    y=display_btc["BTC"],
     mode="lines",
+    line=dict(width=2),
     name="BTC"
 ))
 
-for i in range(1, len(display)):
-    if display["BTC_Regime"].iloc[i] == "Bear":
+for i in range(1, len(display_btc)):
+    if display_btc["BTC_Regime"].iloc[i] == "Bear":
         btc_fig.add_vrect(
-            x0=display.index[i-1],
-            x1=display.index[i],
+            x0=display_btc.index[i-1],
+            x1=display_btc.index[i],
             fillcolor="orange",
             opacity=0.08,
             line_width=0
@@ -216,40 +177,17 @@ for i in range(1, len(display)):
 btc_fig.update_layout(
     template="plotly_dark",
     height=500,
-    title="BTC (12M Regime View)"
+    title="BTC (12M View)"
 )
 
 st.plotly_chart(btc_fig, use_container_width=True)
 
 # ==========================
-# SPREAD CHART
-# ==========================
-
-spread_fig = go.Figure()
-
-spread_fig.add_trace(go.Scatter(
-    x=display.index,
-    y=display["MCapSpread"],
-    mode="lines",
-    name="MCap vs Realized Spread"
-))
-
-spread_fig.update_layout(
-    template="plotly_dark",
-    height=400,
-    title="BTC Market Cap vs Realized Cap Growth Spread"
-)
-
-st.plotly_chart(spread_fig, use_container_width=True)
-
-# ==========================
-# METRICS PANEL
+# METRICS
 # ==========================
 
 st.markdown("---")
+c1, c2 = st.columns(2)
 
-c1, c2, c3 = st.columns(3)
-
-c1.metric("SPY Regime", display["Regime"].iloc[-1])
-c2.metric("BTC Regime", display["BTC_Regime"].iloc[-1])
-c3.metric("MCap Spread", round(display["MCapSpread"].iloc[-1], 4))
+c1.metric("SPY Regime", display_spy["Regime"].iloc[-1])
+c2.metric("BTC Regime", display_btc["BTC_Regime"].iloc[-1])
