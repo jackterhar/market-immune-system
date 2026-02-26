@@ -254,8 +254,28 @@ fig.update_yaxes(title_text="USD", row=2, col=1)
 fig.update_yaxes(title_text="Z-Score", row=3, col=1)
 fig.update_yaxes(title_text="Weighted Value", row=4, col=1)
 
-fig.update_xaxes(title_text="Date")
+# Force proper datetime formatting
+fig.update_xaxes(
+    type="date",
+    tickformat="%b %Y",          # Jan 2024 format
+    dtick="M3",                  # every 3 months
+    showgrid=True,
+    gridcolor="rgba(0,0,0,0.05)"
+)
 
+# Only bottom panel gets title
+fig.update_xaxes(
+    title_text="Date",
+    row=4,
+    col=1
+)
+
+# Make sure tick labels show on bottom
+fig.update_xaxes(
+    showticklabels=True,
+    row=4,
+    col=1
+)
 st.plotly_chart(fig, use_container_width=True)
 
 # =====================================================
