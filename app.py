@@ -1,206 +1,173 @@
-import streamlit as st
-import pandas as pd
 import numpy as np
-import yfinance as yf
+import pandas as pd
 import plotly.graph_objects as go
-from datetime import datetime
+from plotly.subplots import make_subplots
 
-st.set_page_config(layout="wide")
-st.title("🧬 Market Immune System (Test Version)")
+# =========================
+# 1️⃣ PREP
+# =========================
 
-CALC_YEARS = 10
-DISPLAY_MONTHS = 12
+df = df.copy()
+df = df.dropna()
 
-end = datetime.today()
-start = datetime(end.year - CALC_YEARS, end.month, end.day)
+# Volatility measures
+df['SPY_20d_vol'] = df['SPY'].pct_change().rolling(20).std()
+df['SPY_50d_vol'] = df['SPY'].pct_change().rolling(50).std()
 
-# ==========================
-# DOWNLOAD
-# ==========================
+# =========================
+# 2️⃣ TACTICAL FACTORS (Z-SCORED)
+# =========================
 
-def download_series(ticker):
-    df = yf.download(ticker, start=start, end=end, progress=False)
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    return df["Close"].dropna()
+# --- Trend (3 month momentum) ---
+df['Trend'] = df['SPY'].pct_change(63)
+df['Trend_z'] = (df['Trend'] - df['Trend'].rolling(252).mean()) / df['Trend'].rolling(252).std()
 
-spy = download_series("SPY")
-hyg = download_series("HYG")
-lqd = download_series("LQD")
-vix = download_series("^VIX")
-tnx = download_series("^TNX")  # 10Y
-irx = download_series("^IRX")  # 3M
-btc = download_series("BTC-USD")
+# --- VIX ---
+df['VIX_z'] = (df['VIX'] - df['VIX'].rolling(252).mean()) / df['VIX'].rolling(252).std()
 
-# ==========================
-# ALIGN CORE SYSTEM
-# ==========================
+# --- Yield Curve ---
+df['YC_z'] = (df['YieldCurve'] - df['YieldCurve'].rolling(252).mean()) / df['YieldCurve'].rolling(252).std()
 
-core_index = spy.index.intersection(hyg.index).intersection(lqd.index)
-spy = spy.loc[core_index]
-hyg = hyg.loc[core_index]
-lqd = lqd.loc[core_index]
+# --- Volatility Regime ---
+df['VolSpread'] = df['SPY_20d_vol'] - df['SPY_50d_vol']
+df['Vol_z'] = (df['VolSpread'] - df['VolSpread'].rolling(252).mean()) / df['VolSpread'].rolling(252).std()
 
-df = pd.DataFrame(index=core_index)
-df["SPY"] = spy
-df["CreditRatio"] = hyg / lqd
+# =========================
+# 3️⃣ WEIGHTED MACRO SCORE (TACTICAL)
+# =========================
 
-# ==========================
-# INDICATORS
-# ==========================
-
-# SPY Trend
-df["SPY_MA"] = df["SPY"].rolling(20).mean()
-df["SPY_Trend"] = np.where(df["SPY"] > df["SPY_MA"], 1, -1)
-
-# Credit Trend
-df["Credit_MA"] = df["CreditRatio"].rolling(20).mean()
-df["Credit_Trend"] = np.where(df["CreditRatio"] > df["Credit_MA"], 1, -1)
-
-# VIX Regime
-vix = vix.loc[df.index]
-df["VIX"] = vix
-df["VIX_Regime"] = np.where(df["VIX"] < 20, 1, -1)
-
-# Yield Curve
-yc_index = tnx.index.intersection(irx.index).intersection(df.index)
-yield_curve = (tnx.loc[yc_index] - irx.loc[yc_index])
-df["YieldCurve"] = yield_curve
-df["Yield_Regime"] = np.where(df["YieldCurve"] > 0, 1, -1)
-
-# SPY 20D Volatility
-returns = df["SPY"].pct_change()
-df["SPY_Vol"] = returns.rolling(20).std() * np.sqrt(252)
-df["Vol_Regime"] = np.where(df["SPY_Vol"] < df["SPY_Vol"].rolling(50).mean(), 1, -1)
-
-# ==========================
-# COMPOSITE SCORE
-# ==========================
-
-df["MacroScore"] = (
-    df["SPY_Trend"] +
-    df["Credit_Trend"] +
-    df["VIX_Regime"] +
-    df["Yield_Regime"] +
-    df["Vol_Regime"]
+df['MacroScore_raw'] = (
+    0.40 * df['Trend_z'] +
+    -0.30 * df['VIX_z'] +
+    0.15 * df['YC_z'] +
+    -0.15 * df['Vol_z']
 )
 
-def classify(score):
-    if score >= 3:
-        return "Risk-On"
-    elif score <= -3:
-        return "Risk-Off"
-    else:
-        return "Transition"
+# Tactical smoothing (fast but not noisy)
+df['MacroScore'] = df['MacroScore_raw'].ewm(span=8).mean()
 
-df["Regime"] = df["MacroScore"].apply(classify)
+# =========================
+# 4️⃣ 3-STATE REGIME
+# =========================
 
-# ==========================
-# BTC SYSTEM
-# ==========================
+upper = 0.4
+lower = -0.4
 
-btc_df = pd.DataFrame(index=btc.index)
-btc_df["BTC"] = btc
-btc_df["BTC_MA"] = btc_df["BTC"].rolling(20).mean()
-btc_df["BTC_Regime"] = np.where(btc_df["BTC"] > btc_df["BTC_MA"], "Bull", "Bear")
+conditions = [
+    df['MacroScore'] > upper,
+    df['MacroScore'] < lower
+]
 
-# ==========================
-# DISPLAY WINDOWS
-# ==========================
+choices = ['Risk-On', 'Risk-Off']
 
-display_spy = df.loc[df.index.max() - pd.DateOffset(months=DISPLAY_MONTHS):]
-display_btc = btc_df.loc[btc_df.index.max() - pd.DateOffset(months=DISPLAY_MONTHS):]
+df['MacroRegime'] = np.select(conditions, choices, default='Neutral')
 
-# ==========================
-# CONTINUOUS REGIME SHADING
-# ==========================
+# =========================
+# 5️⃣ REGIME BLOCK RENDERING (NO STRIPES)
+# =========================
 
-def add_continuous_shading(fig, data, regime_col, color_map):
-    for i in range(1, len(data)):
-        regime = data[regime_col].iloc[i]
-        fig.add_vrect(
-            x0=data.index[i-1],
-            x1=data.index[i],
-            fillcolor=color_map[regime],
-            opacity=0.15,
-            line_width=0
-        )
+def add_regime_blocks(fig, df, regime_col, row):
 
-# Color maps
-spy_colors = {
-    "Risk-On": "green",
-    "Transition": "gold",
-    "Risk-Off": "red"
-}
+    colors = {
+        'Risk-On': 'rgba(0,120,0,0.18)',
+        'Neutral': 'rgba(180,150,0,0.18)',
+        'Risk-Off': 'rgba(150,0,0,0.18)'
+    }
 
-btc_colors = {
-    "Bull": "green",
-    "Bear": "red"
-}
+    current_regime = None
+    start_date = None
 
-# ==========================
-# SPY CHART
-# ==========================
+    for date, regime in df[regime_col].items():
 
-spy_fig = go.Figure()
+        if regime != current_regime:
 
-add_continuous_shading(spy_fig, display_spy, "Regime", spy_colors)
+            if current_regime is not None:
+                fig.add_vrect(
+                    x0=start_date,
+                    x1=prev_date,
+                    fillcolor=colors[current_regime],
+                    opacity=1,
+                    layer="below",
+                    line_width=0,
+                    row=row,
+                    col=1
+                )
 
-spy_fig.add_trace(go.Scatter(
-    x=display_spy.index,
-    y=display_spy["SPY"],
-    mode="lines",
-    line=dict(color="white", width=2),
-    name="SPY"
-))
+            start_date = date
+            current_regime = regime
 
-spy_fig.update_layout(
-    template="plotly_dark",
-    height=550,
-    title="SPY (12M Macro Regime)"
+        prev_date = date
+
+    # final block
+    fig.add_vrect(
+        x0=start_date,
+        x1=prev_date,
+        fillcolor=colors[current_regime],
+        opacity=1,
+        layer="below",
+        line_width=0,
+        row=row,
+        col=1
+    )
+
+# =========================
+# 6️⃣ BUILD CHART
+# =========================
+
+fig = make_subplots(
+    rows=3,
+    cols=1,
+    shared_xaxes=True,
+    vertical_spacing=0.08,
+    row_heights=[0.4, 0.4, 0.2]
 )
 
-st.plotly_chart(spy_fig, use_container_width=True)
-
-# ==========================
-# BTC CHART
-# ==========================
-
-st.markdown("---")
-st.subheader("₿ Bitcoin")
-
-btc_fig = go.Figure()
-
-add_continuous_shading(btc_fig, display_btc, "BTC_Regime", btc_colors)
-
-btc_fig.add_trace(go.Scatter(
-    x=display_btc.index,
-    y=display_btc["BTC"],
-    mode="lines",
-    line=dict(color="white", width=2),
-    name="BTC"
-))
-
-btc_fig.update_layout(
-    template="plotly_dark",
-    height=500,
-    title="BTC (12M Regime)"
+# --- SPY ---
+fig.add_trace(
+    go.Scatter(x=df.index, y=df['SPY'],
+               mode='lines',
+               line=dict(color='white', width=2),
+               name='SPY'),
+    row=1, col=1
 )
 
-st.plotly_chart(btc_fig, use_container_width=True)
+# --- BTC ---
+fig.add_trace(
+    go.Scatter(x=df.index, y=df['BTC'],
+               mode='lines',
+               line=dict(color='#f7931a', width=2),
+               name='BTC'),
+    row=2, col=1
+)
 
-# ==========================
-# INTERPRETATION PANEL
-# ==========================
+# --- MacroScore Panel ---
+fig.add_trace(
+    go.Scatter(x=df.index, y=df['MacroScore'],
+               mode='lines',
+               line=dict(color='cyan', width=2),
+               name='MacroScore'),
+    row=3, col=1
+)
 
-st.markdown("---")
-st.subheader("Macro Diagnostics")
+fig.add_hline(y=upper, line_dash="dot", line_color="green", row=3, col=1)
+fig.add_hline(y=lower, line_dash="dot", line_color="red", row=3, col=1)
 
-c1, c2, c3, c4 = st.columns(4)
+# Add regime shading to SPY + BTC panels
+add_regime_blocks(fig, df, 'MacroRegime', row=1)
+add_regime_blocks(fig, df, 'MacroRegime', row=2)
 
-c1.metric("Macro Regime", display_spy["Regime"].iloc[-1])
-c2.metric("VIX", round(display_spy["VIX"].iloc[-1],2))
-c3.metric("Yield Curve", round(display_spy["YieldCurve"].iloc[-1],2))
-c4.metric("SPY 20D Vol", round(display_spy["SPY_Vol"].iloc[-1],2))
+# =========================
+# 7️⃣ LAYOUT CLEANUP
+# =========================
 
-st.write("Composite Macro Score:", display_spy["MacroScore"].iloc[-1])
+fig.update_layout(
+    template='plotly_dark',
+    height=1000,
+    title="Market Immune System (Tactical)",
+    showlegend=False
+)
+
+fig.update_xaxes(showgrid=False)
+fig.update_yaxes(showgrid=True, gridcolor='rgba(255,255,255,0.05)')
+
+fig.show()
