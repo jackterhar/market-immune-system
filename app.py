@@ -584,11 +584,12 @@ st.markdown("")
 # =====================================================
 # TABBED LAYOUT
 # =====================================================
-tab_regime, tab_technicals, tab_onchain, tab_alerts, tab_analysis, tab_methodology = st.tabs([
+tab_regime, tab_technicals, tab_onchain, tab_alerts, tab_report, tab_analysis, tab_methodology = st.tabs([
     "📈 Regime Dashboard",
     "🔬 Technical Indicators",
     "⛓️ BTC On-Chain",
     "🔔 Alerts",
+    "📋 Daily Report",
     "📊 Analysis",
     "📖 Methodology",
 ])
@@ -1189,7 +1190,186 @@ with tab_alerts:
 
 
 # ─────────────────────────────────────────────────────
-# TAB 4: ANALYSIS
+# TAB 5: DAILY REPORT
+# ─────────────────────────────────────────────────────
+with tab_report:
+    st.markdown("### 📋 Daily Regime Report")
+    st.caption("Auto-generated summary — equivalent to a morning briefing. "
+               "Saves a persistent log to track regime changes over time.")
+
+    # ── Regime state persistence (uses Streamlit session + optional file) ──
+    import os as _os
+
+    REPORT_DIR = _os.path.dirname(_os.path.abspath(__file__))
+    STATE_FILE = _os.path.join(REPORT_DIR, "regime_state.json")
+    LOG_FILE = _os.path.join(REPORT_DIR, "regime_alert_log.csv")
+
+    # Load previous state
+    prev_state = None
+    regime_changed = False
+    prev_regime_saved = None
+    try:
+        if _os.path.exists(STATE_FILE):
+            with open(STATE_FILE) as _f:
+                prev_state = json.load(_f)
+                prev_regime_saved = prev_state.get("regime")
+                if prev_regime_saved and prev_regime_saved != current_regime:
+                    regime_changed = True
+    except Exception:
+        pass
+
+    # Save current state
+    try:
+        with open(STATE_FILE, "w") as _f:
+            json.dump({
+                "regime": current_regime,
+                "score": round(float(current_score), 4),
+                "date": df.index[-1].strftime("%Y-%m-%d"),
+                "updated_at": datetime.now().isoformat(),
+            }, _f, indent=2)
+    except Exception:
+        pass
+
+    # Append to persistent log
+    try:
+        log_row = pd.DataFrame([{
+            "date": df.index[-1].strftime("%Y-%m-%d"),
+            "checked_at": datetime.now().isoformat(),
+            "regime": current_regime,
+            "score": round(float(current_score), 4),
+            "spy_price": round(float(df["SPY"].iloc[-1]), 2),
+            "btc_price": round(float(df["BTC"].iloc[-1]), 2),
+            "vix": round(float(df["VIX"].iloc[-1]), 2),
+            "spy_rsi": round(float(df["SPY_RSI"].iloc[-1]), 1),
+            "btc_rsi": round(float(df["BTC_RSI"].iloc[-1]), 1),
+            "regime_changed": regime_changed,
+        }])
+        if _os.path.exists(LOG_FILE):
+            existing_log = pd.read_csv(LOG_FILE)
+            # Only append if date changed
+            if existing_log["date"].iloc[-1] != log_row["date"].iloc[0]:
+                combined_log = pd.concat([existing_log, log_row], ignore_index=True)
+                combined_log.to_csv(LOG_FILE, index=False)
+        else:
+            log_row.to_csv(LOG_FILE, index=False)
+    except Exception:
+        pass
+
+    # ── Regime change banner ──
+    if regime_changed:
+        st.markdown(f"""
+        <div style="background: linear-gradient(135deg, #1a1d24, #2d1a1a); border: 2px solid #ef4444;
+                    border-radius: 12px; padding: 20px; margin-bottom: 20px; text-align:center;">
+            <div style="font-size: 1.5rem; font-weight: 700; color: #ef4444; margin-bottom: 8px;">
+                🚨 REGIME CHANGE DETECTED
+            </div>
+            <div style="font-size: 1.1rem; color: #e0e0e0;">
+                <span style="color:{BADGE_COLORS.get(prev_regime_saved, '#888')}; font-weight:600;">{prev_regime_saved}</span>
+                <span style="color:#8b95a5;"> → </span>
+                <span style="color:{BADGE_COLORS[current_regime]}; font-weight:600;">{current_regime}</span>
+            </div>
+            <div style="color:#8b95a5; margin-top:8px; font-size:0.9rem;">
+                Score: {current_score:.3f} | Detected: {datetime.now().strftime('%b %d, %Y %H:%M')}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        status_color = BADGE_COLORS[current_regime]
+        st.markdown(f"""
+        <div style="background: linear-gradient(135deg, #1a1d24, #21252e); border: 1px solid #2d3344;
+                    border-radius: 12px; padding: 20px; margin-bottom: 20px; text-align:center;">
+            <div style="font-size: 1.1rem; color: #8b95a5; margin-bottom: 4px;">Current Regime</div>
+            <div style="font-size: 1.8rem; font-weight: 700; color: {status_color};">{current_regime}</div>
+            <div style="color:#8b95a5; margin-top:8px; font-size:0.9rem;">
+                No change since last check | Score: {current_score:.3f}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # ── Report body ──
+    # Score trend
+    scores_5d = df["MacroScore"].iloc[-5:]
+    score_trend = "📈 Rising" if scores_5d.iloc[-1] > scores_5d.iloc[0] else "📉 Falling"
+    spy_5d = (df["SPY"].iloc[-1] / df["SPY"].iloc[-5] - 1) * 100
+    btc_5d = (df["BTC"].iloc[-1] / df["BTC"].iloc[-5] - 1) * 100
+    spy_1d_val = df["SPY_Return"].iloc[-1] * 100
+    btc_1d_val = df["BTC_Return"].iloc[-1] * 100
+
+    rc1, rc2 = st.columns(2)
+
+    with rc1:
+        st.markdown("#### Prices & Returns")
+        report_price_data = pd.DataFrame({
+            "Asset": ["SPY", "BTC"],
+            "Price": [f"${df['SPY'].iloc[-1]:,.2f}", f"${df['BTC'].iloc[-1]:,.0f}"],
+            "1-Day": [f"{spy_1d_val:+.2f}%", f"{btc_1d_val:+.2f}%"],
+            "5-Day": [f"{spy_5d:+.2f}%", f"{btc_5d:+.2f}%"],
+            "RSI": [f"{df['SPY_RSI'].iloc[-1]:.1f}", f"{df['BTC_RSI'].iloc[-1]:.1f}"],
+        })
+        st.dataframe(report_price_data, use_container_width=True, hide_index=True, height=115)
+
+    with rc2:
+        st.markdown("#### Factor Breakdown")
+        contrib_trend_val = WEIGHTS["Trend_z"] * df["Trend_z"].iloc[-1]
+        contrib_vix_val = WEIGHTS["VIX_z"] * df["VIX_z"].iloc[-1]
+        contrib_yc_val = WEIGHTS["YC_z"] * df["YC_z"].iloc[-1]
+        contrib_vol_val = WEIGHTS["Vol_z"] * df["Vol_z"].iloc[-1]
+        factor_data = pd.DataFrame({
+            "Factor": ["Trend (40%)", "VIX (−30%)", "Yield Curve (15%)", "Vol Spread (−15%)"],
+            "Z-Score": [f"{df['Trend_z'].iloc[-1]:.3f}", f"{df['VIX_z'].iloc[-1]:.3f}",
+                        f"{df['YC_z'].iloc[-1]:.3f}", f"{df['Vol_z'].iloc[-1]:.3f}"],
+            "Contribution": [f"{contrib_trend_val:+.3f}", f"{contrib_vix_val:+.3f}",
+                             f"{contrib_yc_val:+.3f}", f"{contrib_vol_val:+.3f}"],
+        })
+        st.dataframe(factor_data, use_container_width=True, hide_index=True, height=180)
+
+    st.markdown(f"""
+    <div style="background:#1a1d24; border:1px solid #2d3344; border-radius:8px; padding:16px; margin-top:12px;">
+        <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:16px;">
+            <div><span style="color:#8b95a5;">Score Trend (5d):</span> <span style="color:#e0e0e0;">{score_trend}</span></div>
+            <div><span style="color:#8b95a5;">VIX:</span> <span style="color:#e0e0e0;">{df['VIX'].iloc[-1]:.2f}</span></div>
+            <div><span style="color:#8b95a5;">Days in Regime:</span> <span style="color:#e0e0e0;">{int(current_duration)}</span></div>
+            <div><span style="color:#8b95a5;">Data Through:</span> <span style="color:#e0e0e0;">{df.index[-1].strftime('%b %d, %Y')}</span></div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Proximity warnings in report
+    if abs(current_score - upper_thresh) < alert_score_proximity and current_regime != "Risk-On":
+        st.warning(f"⚡ Score ({current_score:.3f}) approaching Risk-On threshold ({upper_thresh})")
+    if abs(current_score - lower_thresh) < alert_score_proximity and current_regime != "Risk-Off":
+        st.warning(f"⚡ Score ({current_score:.3f}) approaching Risk-Off threshold ({lower_thresh})")
+
+    # ── Historical log viewer ──
+    st.markdown("---")
+    st.markdown("#### 📜 Regime Check Log")
+    st.caption("Every time this dashboard loads, it logs the current state. Regime changes are flagged.")
+    try:
+        if _os.path.exists(LOG_FILE):
+            hist_log = pd.read_csv(LOG_FILE)
+            hist_log = hist_log.sort_values("date", ascending=False)
+
+            def style_log(tbl):
+                def _regime_bg(val):
+                    c = {"Risk-On": "#1a3a1a", "Neutral": "#3a3a1a", "Risk-Off": "#3a1a1a"}.get(val, "")
+                    return f"background-color: {c}; color: #e0e0e0"
+                def _changed(val):
+                    if val == True or val == "True":
+                        return "background-color: #3a1a1a; color: #ef4444; font-weight: 600"
+                    return ""
+                return (tbl.style
+                        .map(_regime_bg, subset=["regime"])
+                        .map(_changed, subset=["regime_changed"]))
+
+            st.dataframe(style_log(hist_log), use_container_width=True, hide_index=True, height=300)
+        else:
+            st.info("No log entries yet. The log builds up each time the dashboard loads.")
+    except Exception as e:
+        st.info(f"Log not available yet — will populate on next reload.")
+
+
+# ─────────────────────────────────────────────────────
+# TAB 6: ANALYSIS
 # ─────────────────────────────────────────────────────
 with tab_analysis:
     st.markdown("### Regime History")
