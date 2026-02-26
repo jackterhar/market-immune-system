@@ -1310,10 +1310,10 @@ with tab_report:
 
     with rc2:
         st.markdown("#### Factor Breakdown")
-        contrib_trend_val = WEIGHTS["Trend_z"] * df["Trend_z"].iloc[-1]
-        contrib_vix_val = WEIGHTS["VIX_z"] * df["VIX_z"].iloc[-1]
-        contrib_yc_val = WEIGHTS["YC_z"] * df["YC_z"].iloc[-1]
-        contrib_vol_val = WEIGHTS["Vol_z"] * df["Vol_z"].iloc[-1]
+        contrib_trend_val = weights["Trend_z"] * df["Trend_z"].iloc[-1]
+        contrib_vix_val = weights["VIX_z"] * df["VIX_z"].iloc[-1]
+        contrib_yc_val = weights["YC_z"] * df["YC_z"].iloc[-1]
+        contrib_vol_val = weights["Vol_z"] * df["Vol_z"].iloc[-1]
         factor_data = pd.DataFrame({
             "Factor": ["Trend (40%)", "VIX (−30%)", "Yield Curve (15%)", "Vol Spread (−15%)"],
             "Z-Score": [f"{df['Trend_z'].iloc[-1]:.3f}", f"{df['VIX_z'].iloc[-1]:.3f}",
