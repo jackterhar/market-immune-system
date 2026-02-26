@@ -23,6 +23,8 @@ import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
+import requests
+import json
 
 # =====================================================
 # PAGE CONFIG
@@ -106,6 +108,14 @@ with st.sidebar:
     show_bbands = st.checkbox("Bollinger Bands", value=True)
 
     st.markdown("---")
+    st.markdown("### 🔄 Auto-Refresh")
+    auto_refresh = st.checkbox("Enable auto-refresh", value=False)
+    refresh_interval = st.selectbox("Refresh interval", [60, 300, 600, 1800, 3600],
+                                     format_func=lambda x: {60: "1 min", 300: "5 min", 600: "10 min",
+                                                             1800: "30 min", 3600: "1 hour"}[x],
+                                     index=2)
+
+    st.markdown("---")
     st.markdown("### 🔔 Alerts")
     alert_on_regime_change = st.checkbox("Show regime change alerts", value=True)
     alert_score_proximity = st.slider(
@@ -184,6 +194,81 @@ def load_data(period: str) -> pd.DataFrame:
 
 
 df = load_data(lookback)
+
+
+# =====================================================
+# ON-CHAIN / SENTIMENT DATA
+# =====================================================
+@st.cache_data(ttl=14400, show_spinner="Fetching on-chain data…")
+def load_onchain_data():
+    """Fetch BTC on-chain & sentiment metrics from free public APIs."""
+    result = {}
+
+    # 1. Crypto Fear & Greed Index (alternative.me — free, no key)
+    try:
+        resp = requests.get(
+            "https://api.alternative.me/fng/?limit=365&format=json",
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            fng_raw = resp.json().get("data", [])
+            fng_df = pd.DataFrame(fng_raw)
+            fng_df["date"] = pd.to_datetime(fng_df["timestamp"].astype(int), unit="s")
+            fng_df["value"] = fng_df["value"].astype(int)
+            fng_df = fng_df.set_index("date").sort_index()
+            result["fear_greed"] = fng_df
+    except Exception:
+        pass
+
+    # 2. BTC volume data from yfinance for exchange-volume metrics
+    try:
+        btc_raw = yf.download("BTC-USD", period="2y", auto_adjust=False, progress=False)
+        if not btc_raw.empty:
+            vol = btc_raw["Volume"]
+            if isinstance(vol, pd.DataFrame):
+                vol = vol.iloc[:, 0]
+            close = btc_raw["Close"]
+            if isinstance(close, pd.DataFrame):
+                close = close.iloc[:, 0]
+            high = btc_raw["High"]
+            if isinstance(high, pd.DataFrame):
+                high = high.iloc[:, 0]
+            low = btc_raw["Low"]
+            if isinstance(low, pd.DataFrame):
+                low = low.iloc[:, 0]
+
+            vol_df = pd.DataFrame({
+                "BTC_Volume": vol,
+                "BTC_Close": close,
+                "BTC_High": high,
+                "BTC_Low": low,
+            })
+            # Volume SMA ratio (current vol vs 50d avg — proxy for exchange activity)
+            vol_df["Vol_SMA50"] = vol_df["BTC_Volume"].rolling(50).mean()
+            vol_df["Volume_Ratio"] = vol_df["BTC_Volume"] / vol_df["Vol_SMA50"]
+
+            # Realized volatility: 30d annualized
+            vol_df["BTC_LogRet"] = np.log(vol_df["BTC_Close"] / vol_df["BTC_Close"].shift(1))
+            vol_df["Realized_Vol_30d"] = vol_df["BTC_LogRet"].rolling(30).std() * np.sqrt(365) * 100
+
+            # NVT-lite proxy: market cap / volume (using price * vol as rough proxy)
+            vol_df["Dollar_Volume"] = vol_df["BTC_Close"] * vol_df["BTC_Volume"]
+            vol_df["NVT_Proxy"] = vol_df["BTC_Close"] / (
+                vol_df["Dollar_Volume"].rolling(28).mean() / vol_df["BTC_Close"].rolling(28).mean()
+            )
+
+            # MVRV proxy: price / 200-day SMA (rough realized value proxy)
+            vol_df["SMA200"] = vol_df["BTC_Close"].rolling(200).mean()
+            vol_df["MVRV_Proxy"] = vol_df["BTC_Close"] / vol_df["SMA200"]
+
+            result["volume_metrics"] = vol_df.dropna()
+    except Exception:
+        pass
+
+    return result
+
+
+onchain = load_onchain_data()
 
 if len(df) < 300:
     st.error("Insufficient data history. Need at least 300 trading days.")
@@ -499,9 +584,10 @@ st.markdown("")
 # =====================================================
 # TABBED LAYOUT
 # =====================================================
-tab_regime, tab_technicals, tab_alerts, tab_analysis, tab_methodology = st.tabs([
+tab_regime, tab_technicals, tab_onchain, tab_alerts, tab_analysis, tab_methodology = st.tabs([
     "📈 Regime Dashboard",
     "🔬 Technical Indicators",
+    "⛓️ BTC On-Chain",
     "🔔 Alerts",
     "📊 Analysis",
     "📖 Methodology",
@@ -811,7 +897,219 @@ with tab_technicals:
 
 
 # ─────────────────────────────────────────────────────
-# TAB 3: ALERTS
+# TAB 3: BTC ON-CHAIN
+# ─────────────────────────────────────────────────────
+with tab_onchain:
+    st.markdown("### Bitcoin On-Chain & Sentiment Metrics")
+    st.caption("Derived from public APIs and volume analysis. MVRV and NVT are proxy approximations.")
+
+    # Fear & Greed Index
+    if "fear_greed" in onchain:
+        fng = onchain["fear_greed"]
+        current_fng = int(fng["value"].iloc[-1])
+        fng_class = fng["value_classification"].iloc[-1] if "value_classification" in fng.columns else ""
+
+        fng_color = "#ef4444" if current_fng < 25 else (
+            "#f59e0b" if current_fng < 45 else (
+                "#eab308" if current_fng < 55 else (
+                    "#22c55e" if current_fng < 75 else "#16a34a"
+                )
+            )
+        )
+
+        fc1, fc2, fc3 = st.columns(3)
+        with fc1:
+            # Fear & Greed gauge
+            fng_gauge = go.Figure(go.Indicator(
+                mode="gauge+number",
+                value=current_fng,
+                number={"font": {"size": 42, "color": "#ffffff"}},
+                gauge={
+                    "axis": {"range": [0, 100], "tickcolor": "#555"},
+                    "bar": {"color": fng_color, "thickness": 0.3},
+                    "bgcolor": "#1a1d24",
+                    "bordercolor": "#2d3344",
+                    "steps": [
+                        {"range": [0, 25], "color": "rgba(239,68,68,0.15)"},
+                        {"range": [25, 45], "color": "rgba(245,158,11,0.10)"},
+                        {"range": [45, 55], "color": "rgba(234,179,8,0.10)"},
+                        {"range": [55, 75], "color": "rgba(34,197,94,0.10)"},
+                        {"range": [75, 100], "color": "rgba(22,163,74,0.15)"},
+                    ],
+                },
+                title={"text": "Fear & Greed Index", "font": {"size": 14, "color": "#8b95a5"}},
+            ))
+            fng_gauge.update_layout(
+                height=220,
+                paper_bgcolor="#0e1117",
+                plot_bgcolor="#0e1117",
+                font=dict(color="#c8cdd5"),
+                margin=dict(t=50, b=10, l=30, r=30),
+            )
+            st.plotly_chart(fng_gauge, use_container_width=True, key="fng_gauge")
+            st.markdown(f"<p style='text-align:center; color:{fng_color}; font-weight:600;'>{fng_class}</p>",
+                        unsafe_allow_html=True)
+
+        # Fear & Greed time series
+        fng_fig = go.Figure()
+        fng_colors_ts = ["#ef4444" if v < 25 else "#f59e0b" if v < 45 else "#eab308" if v < 55
+                         else "#22c55e" if v < 75 else "#16a34a" for v in fng["value"]]
+        fng_fig.add_trace(go.Scatter(
+            x=fng.index, y=fng["value"],
+            mode="lines",
+            line=dict(width=1.5, color="#a78bfa"),
+            name="Fear & Greed",
+            hovertemplate="%{x|%b %d %Y}<br>Score: %{y}<extra></extra>",
+        ))
+        fng_fig.add_hline(y=25, line_dash="dot", line_color="rgba(239,68,68,0.4)")
+        fng_fig.add_hline(y=75, line_dash="dot", line_color="rgba(34,197,94,0.4)")
+        fng_fig.add_hline(y=50, line_dash="dot", line_color="rgba(150,150,150,0.3)")
+        fng_fig.add_hrect(y0=0, y1=25, fillcolor="rgba(239,68,68,0.05)", line_width=0)
+        fng_fig.add_hrect(y0=75, y1=100, fillcolor="rgba(34,197,94,0.05)", line_width=0)
+        fng_fig.update_layout(
+            height=300,
+            **DARK_LAYOUT,
+            yaxis_title="Score",
+            yaxis_range=[0, 100],
+        )
+        with fc2:
+            st.plotly_chart(fng_fig, use_container_width=True, key="fng_ts")
+
+        # Fear & Greed distribution
+        fng_hist = go.Figure()
+        fng_hist.add_trace(go.Histogram(
+            x=fng["value"],
+            nbinsx=20,
+            marker_color="#818cf8",
+            opacity=0.7,
+        ))
+        fng_hist.update_layout(
+            height=300,
+            **DARK_LAYOUT,
+            xaxis_title="Score",
+            yaxis_title="Frequency",
+        )
+        with fc3:
+            st.plotly_chart(fng_hist, use_container_width=True, key="fng_hist")
+    else:
+        st.info("Fear & Greed data unavailable. API may be down.")
+
+    st.markdown("---")
+
+    # Volume & On-Chain Proxy Metrics
+    if "volume_metrics" in onchain:
+        vm = onchain["volume_metrics"]
+
+        # Current values
+        oc1, oc2, oc3, oc4 = st.columns(4)
+        with oc1:
+            mvrv_val = vm["MVRV_Proxy"].iloc[-1]
+            mvrv_color = "#ef4444" if mvrv_val > 2.5 else ("#22c55e" if mvrv_val < 1.0 else "#818cf8")
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-label">MVRV Proxy (P/200SMA)</div>
+                <div class="metric-value" style="color:{mvrv_color};">{mvrv_val:.2f}x</div>
+                <div style="color:#8b95a5; margin-top:4px; font-size:0.8rem;">
+                    {"Overheated" if mvrv_val > 2.5 else "Undervalued" if mvrv_val < 1.0 else "Fair value range"}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        with oc2:
+            vol_ratio = vm["Volume_Ratio"].iloc[-1]
+            vr_color = "#22c55e" if vol_ratio > 1.5 else ("#ef4444" if vol_ratio < 0.5 else "#eab308")
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-label">Volume Ratio (vs 50d)</div>
+                <div class="metric-value" style="color:{vr_color};">{vol_ratio:.2f}x</div>
+                <div style="color:#8b95a5; margin-top:4px; font-size:0.8rem;">
+                    {"High activity" if vol_ratio > 1.5 else "Low activity" if vol_ratio < 0.5 else "Normal"}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        with oc3:
+            rvol = vm["Realized_Vol_30d"].iloc[-1]
+            rv_color = "#ef4444" if rvol > 80 else ("#22c55e" if rvol < 40 else "#eab308")
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-label">Realized Vol (30d ann.)</div>
+                <div class="metric-value" style="color:{rv_color};">{rvol:.1f}%</div>
+                <div style="color:#8b95a5; margin-top:4px; font-size:0.8rem;">
+                    {"Extreme" if rvol > 80 else "Calm" if rvol < 40 else "Moderate"}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        with oc4:
+            nvt = vm["NVT_Proxy"].iloc[-1]
+            nvt_color = "#ef4444" if nvt > 1.5 else ("#22c55e" if nvt < 0.5 else "#818cf8")
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-label">NVT Proxy</div>
+                <div class="metric-value" style="color:{nvt_color};">{nvt:.3f}</div>
+                <div style="color:#8b95a5; margin-top:4px; font-size:0.8rem;">
+                    Network value / transaction proxy
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        st.markdown("")
+
+        # Charts: MVRV + Volume Ratio + Realized Vol
+        onchain_fig = make_subplots(
+            rows=3, cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.06,
+            row_heights=[0.35, 0.35, 0.30],
+            subplot_titles=["MVRV Proxy (Price / 200-SMA)", "Volume Ratio (Daily / 50d Avg)", "Realized Volatility (30d Annualized)"],
+        )
+
+        onchain_fig.add_trace(
+            go.Scatter(x=vm.index, y=vm["MVRV_Proxy"], line=dict(width=1.5, color="#a78bfa"),
+                       name="MVRV Proxy",
+                       hovertemplate="%{x|%b %d %Y}<br>MVRV: %{y:.2f}x<extra></extra>"),
+            row=1, col=1,
+        )
+        onchain_fig.add_hline(y=1.0, line_dash="dot", line_color="rgba(150,150,150,0.4)", row=1, col=1)
+        onchain_fig.add_hline(y=2.5, line_dash="dot", line_color="rgba(239,68,68,0.5)", row=1, col=1)
+        onchain_fig.add_hrect(y0=2.5, y1=4.0, fillcolor="rgba(239,68,68,0.05)", line_width=0, row=1, col=1)
+        onchain_fig.add_hrect(y0=0, y1=1.0, fillcolor="rgba(34,197,94,0.05)", line_width=0, row=1, col=1)
+
+        vol_colors = ["#22c55e" if v > 1.5 else "#ef4444" if v < 0.5 else "#818cf8"
+                      for v in vm["Volume_Ratio"]]
+        onchain_fig.add_trace(
+            go.Bar(x=vm.index, y=vm["Volume_Ratio"], marker_color=vol_colors,
+                   name="Vol Ratio", opacity=0.6,
+                   hovertemplate="%{x|%b %d %Y}<br>Ratio: %{y:.2f}x<extra></extra>"),
+            row=2, col=1,
+        )
+        onchain_fig.add_hline(y=1.0, line_dash="dot", line_color="rgba(150,150,150,0.4)", row=2, col=1)
+
+        onchain_fig.add_trace(
+            go.Scatter(x=vm.index, y=vm["Realized_Vol_30d"],
+                       line=dict(width=1.5, color="#f59e0b"),
+                       name="Realized Vol",
+                       fill="tozeroy", fillcolor="rgba(245,158,11,0.08)",
+                       hovertemplate="%{x|%b %d %Y}<br>RVol: %{y:.1f}%<extra></extra>"),
+            row=3, col=1,
+        )
+        onchain_fig.add_hline(y=80, line_dash="dot", line_color="rgba(239,68,68,0.5)", row=3, col=1)
+        onchain_fig.add_hline(y=40, line_dash="dot", line_color="rgba(34,197,94,0.4)", row=3, col=1)
+
+        onchain_fig.update_layout(height=850, **DARK_LAYOUT)
+        for i in range(1, 4):
+            onchain_fig.update_yaxes(gridcolor="rgba(255,255,255,0.04)", row=i, col=1)
+            onchain_fig.update_xaxes(tickformat="%b '%y", showgrid=True,
+                                      gridcolor="rgba(255,255,255,0.04)", row=i, col=1)
+
+        st.plotly_chart(onchain_fig, use_container_width=True, key="onchain_charts")
+    else:
+        st.info("Volume metrics unavailable.")
+
+
+# ─────────────────────────────────────────────────────
+# TAB 4: ALERTS
 # ─────────────────────────────────────────────────────
 with tab_alerts:
     if not alert_on_regime_change:
@@ -1049,12 +1347,25 @@ Alerts trigger on two conditions:
 
 
 # =====================================================
+# AUTO-REFRESH
+# =====================================================
+if auto_refresh:
+    st.markdown(
+        f"""<meta http-equiv="refresh" content="{refresh_interval}">
+        <p style="text-align:center; color:#4ade80; font-size:0.8rem;">
+        🔄 Auto-refresh active — every {refresh_interval // 60} min{'s' if refresh_interval > 60 else ''}
+        </p>""",
+        unsafe_allow_html=True,
+    )
+
+# =====================================================
 # FOOTER
 # =====================================================
 st.markdown("---")
+last_update = df.index[-1].strftime("%b %d, %Y")
 st.markdown(
-    "<p style='text-align:center; color:#555; font-size:0.8rem;'>"
-    "Market Immune System v2.0 — Data via Yahoo Finance — Not financial advice"
-    "</p>",
+    f"<p style='text-align:center; color:#555; font-size:0.8rem;'>"
+    f"Market Immune System v3.0 — Data through {last_update} via Yahoo Finance — Not financial advice"
+    f"</p>",
     unsafe_allow_html=True,
 )
