@@ -387,7 +387,8 @@ DARK_LAYOUT = dict(
     hovermode="x unified",
     legend=dict(
         orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
-        bgcolor="rgba(0,0,0,0)", font=dict(size=11),
+        bgcolor="rgba(0,0,0,0)", font=dict(size=11), tracegroupgap=10,
+        itemwidth=30,
     ),
 )
 
@@ -553,10 +554,10 @@ with tab_spy:
     fig.add_hline(y=0, line_dash="dot", line_color="rgba(150,150,150,0.3)", row=2, col=1)
 
     spy_contrib_meta = {
-        "SPY_Contrib_Trend_z": ("#3b82f6", "Trend (40%)"),
-        "SPY_Contrib_VIX_z": ("#ef4444", "VIX (−30%)"),
-        "SPY_Contrib_YC_z": ("#10b981", "Yield Curve (15%)"),
-        "SPY_Contrib_Vol_z": ("#f59e0b", "Vol Spread (−15%)"),
+        "SPY_Contrib_Trend_z": ("#3b82f6", "Trend 40%"),
+        "SPY_Contrib_VIX_z": ("#ef4444", "VIX −30%"),
+        "SPY_Contrib_YC_z": ("#10b981", "YC 15%"),
+        "SPY_Contrib_Vol_z": ("#f59e0b", "VolSp −15%"),
     }
     for col_name, (color, label) in spy_contrib_meta.items():
         fig.add_trace(go.Scatter(
@@ -607,10 +608,10 @@ with tab_btc:
     fig2.add_hline(y=0, line_dash="dot", line_color="rgba(150,150,150,0.3)", row=2, col=1)
 
     btc_contrib_meta = {
-        "BTC_Contrib_Trend_z": ("#f97316", "Momentum (35%)"),
-        "BTC_Contrib_RVol_z": ("#ef4444", "Realized Vol (−25%)"),
-        "BTC_Contrib_VolRatio_z": ("#3b82f6", "Volume Ratio (15%)"),
-        "BTC_Contrib_MVRV_z": ("#a78bfa", "MVRV Proxy (25%)"),
+        "BTC_Contrib_Trend_z": ("#f97316", "Mom 35%"),
+        "BTC_Contrib_RVol_z": ("#ef4444", "RVol −25%"),
+        "BTC_Contrib_VolRatio_z": ("#3b82f6", "VolR 15%"),
+        "BTC_Contrib_MVRV_z": ("#a78bfa", "MVRV 25%"),
     }
     for col_name, (color, label) in btc_contrib_meta.items():
         fig2.add_trace(go.Scatter(
