@@ -90,7 +90,7 @@ Dual Regime Engine — Independent SPY &amp; BTC macro classification
 # =====================================================
 with st.sidebar:
     st.markdown("### ⚙️ Settings")
-    lookback = st.selectbox("History", ["2y", "3y", "5y", "10y"], index=2)
+    lookback = st.selectbox("History", ["2y", "3y", "5y", "10y"], index=0)
     zscore_window = st.slider("Z-score window (days)", 126, 504, 252, step=21,
                                help="Rolling window for z-score normalization")
     ewm_span = st.slider("EWM smoothing span", 5, 30, 10,
@@ -161,7 +161,7 @@ def _fetch_coinbase_btc(start: datetime, end: datetime) -> pd.DataFrame:
     cb["date"] = pd.to_datetime(cb["ts"], unit="s")
     cb = cb.sort_values("date").drop_duplicates(subset="date", keep="last")
     cb = cb.set_index("date")
-    result = pd.DataFrame({"BTC": cb["close"], "BTC_High": cb["high"], "BTC_Volume": cb["volume"]})
+    result = pd.DataFrame({"BTC": cb["close"], "BTC_High": cb["high"], "BTC_Low": cb["low"], "BTC_Volume": cb["volume"]})
     result.index.name = None
     return result
 
@@ -219,10 +219,13 @@ def load_data(period: str) -> pd.DataFrame:
                 high = btc_raw["High"]
                 if isinstance(high, pd.DataFrame):
                     high = high.iloc[:, 0]
+                low = btc_raw["Low"]
+                if isinstance(low, pd.DataFrame):
+                    low = low.iloc[:, 0]
                 vol = btc_raw["Volume"]
                 if isinstance(vol, pd.DataFrame):
                     vol = vol.iloc[:, 0]
-                btc_df = pd.DataFrame({"BTC": close.squeeze(), "BTC_High": high.squeeze(), "BTC_Volume": vol.squeeze()})
+                btc_df = pd.DataFrame({"BTC": close.squeeze(), "BTC_High": high.squeeze(), "BTC_Low": low.squeeze(), "BTC_Volume": vol.squeeze()})
                 st.caption("🟡 BTC price data: Yahoo Finance (Coinbase unavailable)")
             else:
                 errors.append("BTC: no data from either Coinbase or Yahoo Finance")
@@ -268,15 +271,20 @@ def load_data(period: str) -> pd.DataFrame:
     core_cols = [c for c in df.columns if c not in ("BTC_Peak_Full", "BTC_DD_Full")]
     df = df.dropna(subset=core_cols)
 
-    # --- BTC drawdown from full 7-day series using intraday HIGH for peak ---
-    # This captures true ATHs (e.g. Oct 2025 ~$126k) that the daily close misses.
-    # Drawdown = (current close / highest high ever) - 1
+    # --- BTC drawdown from full 7-day series using HIGH for peak, LOW for trough ---
+    # Peak = cumulative max of daily highs (captures intraday ATH e.g. ~$126k Oct 2025)
+    # Trough = daily low (captures intraday lows e.g. ~$60k)
+    # Drawdown = (daily low / highest high to date) - 1
     if not btc_df.empty:
-        btc_close_full = btc_df["BTC"].dropna().sort_index()
-        btc_high_full = btc_df["BTC_High"].dropna().sort_index() if "BTC_High" in btc_df.columns else btc_close_full
+        btc_high_full = (btc_df["BTC_High"].dropna().sort_index() if "BTC_High" in btc_df.columns
+                         else btc_df["BTC"].dropna().sort_index())
+        btc_low_full = (btc_df["BTC_Low"].dropna().sort_index() if "BTC_Low" in btc_df.columns
+                        else btc_df["BTC"].dropna().sort_index())
         btc_peak_full = btc_high_full.cummax()
-        btc_dd_full = (btc_close_full / btc_peak_full.reindex(btc_close_full.index, method="ffill") - 1) * 100
-        # Map onto equity-day index; ffill carries weekend peaks to Monday
+        # Align peak to low series index, then compute drawdown from intraday low
+        peak_aligned = btc_peak_full.reindex(btc_low_full.index, method="ffill")
+        btc_dd_full = (btc_low_full / peak_aligned - 1) * 100
+        # Map onto equity-day index; ffill carries weekend peaks/troughs to Monday
         df["BTC_Peak_Full"] = btc_peak_full.reindex(df.index, method="ffill")
         df["BTC_DD_Full"] = btc_dd_full.reindex(df.index, method="ffill")
         # bfill for any leading NaNs if BTC series starts after SPY
