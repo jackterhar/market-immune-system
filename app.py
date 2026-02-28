@@ -131,7 +131,7 @@ def _fetch_coinbase_btc(start: datetime, end: datetime) -> pd.DataFrame:
 
     The public endpoint returns max 300 candles per request,
     so we paginate in 300-day windows and stitch together.
-    Returns DataFrame with columns: BTC, BTC_Volume indexed by date.
+    Returns DataFrame with columns: BTC, BTC_High, BTC_Volume indexed by date.
     """
     CB_URL = "https://api.exchange.coinbase.com/products/BTC-USD/candles"
     GRANULARITY = 86400  # 1 day
@@ -161,7 +161,7 @@ def _fetch_coinbase_btc(start: datetime, end: datetime) -> pd.DataFrame:
     cb["date"] = pd.to_datetime(cb["ts"], unit="s")
     cb = cb.sort_values("date").drop_duplicates(subset="date", keep="last")
     cb = cb.set_index("date")
-    result = pd.DataFrame({"BTC": cb["close"], "BTC_Volume": cb["volume"]})
+    result = pd.DataFrame({"BTC": cb["close"], "BTC_High": cb["high"], "BTC_Volume": cb["volume"]})
     result.index.name = None
     return result
 
@@ -216,10 +216,13 @@ def load_data(period: str) -> pd.DataFrame:
                 close = btc_raw["Close"]
                 if isinstance(close, pd.DataFrame):
                     close = close.iloc[:, 0]
+                high = btc_raw["High"]
+                if isinstance(high, pd.DataFrame):
+                    high = high.iloc[:, 0]
                 vol = btc_raw["Volume"]
                 if isinstance(vol, pd.DataFrame):
                     vol = vol.iloc[:, 0]
-                btc_df = pd.DataFrame({"BTC": close.squeeze(), "BTC_Volume": vol.squeeze()})
+                btc_df = pd.DataFrame({"BTC": close.squeeze(), "BTC_High": high.squeeze(), "BTC_Volume": vol.squeeze()})
                 st.caption("🟡 BTC price data: Yahoo Finance (Coinbase unavailable)")
             else:
                 errors.append("BTC: no data from either Coinbase or Yahoo Finance")
@@ -265,11 +268,14 @@ def load_data(period: str) -> pd.DataFrame:
     core_cols = [c for c in df.columns if c not in ("BTC_Peak_Full", "BTC_DD_Full")]
     df = df.dropna(subset=core_cols)
 
-    # --- BTC drawdown from full 7-day series (captures weekend/holiday ATHs) ---
+    # --- BTC drawdown from full 7-day series using intraday HIGH for peak ---
+    # This captures true ATHs (e.g. Oct 2025 ~$126k) that the daily close misses.
+    # Drawdown = (current close / highest high ever) - 1
     if not btc_df.empty:
-        btc_full = btc_df["BTC"].dropna().sort_index()
-        btc_peak_full = btc_full.cummax()
-        btc_dd_full = (btc_full / btc_peak_full - 1) * 100
+        btc_close_full = btc_df["BTC"].dropna().sort_index()
+        btc_high_full = btc_df["BTC_High"].dropna().sort_index() if "BTC_High" in btc_df.columns else btc_close_full
+        btc_peak_full = btc_high_full.cummax()
+        btc_dd_full = (btc_close_full / btc_peak_full.reindex(btc_close_full.index, method="ffill") - 1) * 100
         # Map onto equity-day index; ffill carries weekend peaks to Monday
         df["BTC_Peak_Full"] = btc_peak_full.reindex(df.index, method="ffill")
         df["BTC_DD_Full"] = btc_dd_full.reindex(df.index, method="ffill")
