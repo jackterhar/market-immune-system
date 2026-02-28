@@ -131,6 +131,8 @@ def load_data(period: str) -> pd.DataFrame:
         "BTC": "BTC-USD",
         "TNX": "^TNX",
         "IRX": "^IRX",
+        "DXY": "DX-Y.NYB",
+        "GOLD": "GC=F",
     }
     data = {}
     errors = []
@@ -189,6 +191,10 @@ def load_data(period: str) -> pd.DataFrame:
     df["BTC"] = df["BTC"].ffill()
     if "BTC_Volume" in df.columns:
         df["BTC_Volume"] = df["BTC_Volume"].ffill()
+    if "DXY" in df.columns:
+        df["DXY"] = df["DXY"].ffill().bfill()
+    if "GOLD" in df.columns:
+        df["GOLD"] = df["GOLD"].ffill().bfill()
 
     df = df.dropna(subset=["SPY"])
     df = df.dropna()
@@ -353,6 +359,28 @@ for k, w in spy_weights.items():
 for k, w in btc_weights.items():
     df[f"BTC_Contrib_{k.replace('BTC_','')}"] = w * df[k]
 
+# =====================================================
+# SCORE VELOCITY (5d rate of change)
+# =====================================================
+df["SPY_Score_Velocity"] = df["SPY_Score"].diff(5)
+df["BTC_Score_Velocity"] = df["BTC_Score"].diff(5)
+
+# =====================================================
+# DRAWDOWNS
+# =====================================================
+df["SPY_Peak"] = df["SPY"].cummax()
+df["SPY_Drawdown"] = (df["SPY"] / df["SPY_Peak"] - 1) * 100
+df["BTC_Peak"] = df["BTC"].cummax()
+df["BTC_Drawdown"] = (df["BTC"] / df["BTC_Peak"] - 1) * 100
+
+# =====================================================
+# REGIME DIVERGENCE
+# =====================================================
+df["Divergent"] = df["SPY_Regime"] != df["BTC_Regime"]
+df["Regime_Agreement"] = np.where(
+    df["SPY_Regime"] == df["BTC_Regime"], df["SPY_Regime"], "Divergent"
+)
+
 # Current state
 spy_regime = df["SPY_Regime"].iloc[-1]
 spy_score = df["SPY_Score"].iloc[-1]
@@ -450,20 +478,31 @@ btc_alerts = build_alerts(df, "BTC_Regime", "BTC_RegimeShift")
 st.markdown("")
 g1, g2, g3, g4 = st.columns([1.2, 1.2, 1, 1])
 
+spy_vel = df["SPY_Score_Velocity"].iloc[-1]
+btc_vel = df["BTC_Score_Velocity"].iloc[-1]
+
 with g1:
     st.plotly_chart(make_gauge(spy_score, spy_score_prev, spy_regime, upper_thresh, lower_thresh, "SPY Score"),
                     use_container_width=True, key="spy_gauge")
     badge_c = BADGE_COLORS[spy_regime]
-    st.markdown(f"<p style='text-align:center;color:{badge_c};font-weight:700;font-size:1.1rem;margin-top:-10px;'>"
-                f"{spy_regime} <span style='color:#8b95a5;font-weight:400;font-size:0.85rem;'>({int(spy_duration)}d)</span></p>",
+    vel_arrow = "▲" if spy_vel > 0.02 else ("▼" if spy_vel < -0.02 else "►")
+    vel_c = "#4ade80" if spy_vel > 0.02 else ("#f87171" if spy_vel < -0.02 else "#8b95a5")
+    st.markdown(f"<p style='text-align:center;margin-top:-10px;'>"
+                f"<span style='color:{badge_c};font-weight:700;font-size:1.1rem;'>{spy_regime}</span> "
+                f"<span style='color:#8b95a5;font-size:0.85rem;'>({int(spy_duration)}d)</span><br>"
+                f"<span style='color:{vel_c};font-size:0.85rem;'>{vel_arrow} {spy_vel:+.3f}/5d</span></p>",
                 unsafe_allow_html=True)
 
 with g2:
     st.plotly_chart(make_gauge(btc_score, btc_score_prev, btc_regime, upper_thresh, lower_thresh, "BTC Score"),
                     use_container_width=True, key="btc_gauge")
     badge_c = BADGE_COLORS[btc_regime]
-    st.markdown(f"<p style='text-align:center;color:{badge_c};font-weight:700;font-size:1.1rem;margin-top:-10px;'>"
-                f"{btc_regime} <span style='color:#8b95a5;font-weight:400;font-size:0.85rem;'>({int(btc_duration)}d)</span></p>",
+    vel_arrow = "▲" if btc_vel > 0.02 else ("▼" if btc_vel < -0.02 else "►")
+    vel_c = "#4ade80" if btc_vel > 0.02 else ("#f87171" if btc_vel < -0.02 else "#8b95a5")
+    st.markdown(f"<p style='text-align:center;margin-top:-10px;'>"
+                f"<span style='color:{badge_c};font-weight:700;font-size:1.1rem;'>{btc_regime}</span> "
+                f"<span style='color:#8b95a5;font-size:0.85rem;'>({int(btc_duration)}d)</span><br>"
+                f"<span style='color:{vel_c};font-size:0.85rem;'>{vel_arrow} {btc_vel:+.3f}/5d</span></p>",
                 unsafe_allow_html=True)
 
 with g3:
@@ -504,20 +543,38 @@ for label, score, thresh_u, thresh_l, regime in [
     if abs(score - thresh_l) < alert_score_proximity and regime != "Risk-Off":
         st.warning(f"⚡ {label} score ({score:.3f}) approaching Risk-Off threshold ({thresh_l})")
 
+# Divergence banner
+is_divergent = spy_regime != btc_regime
+if is_divergent:
+    st.markdown(f"""
+    <div style="background:linear-gradient(135deg,#1a1d24,#2a1a2d);border:1px solid #a78bfa;
+                border-radius:10px;padding:12px 20px;margin:8px 0;display:flex;justify-content:center;align-items:center;gap:20px;">
+        <span style="color:#c4b5fd;font-weight:600;font-size:0.95rem;">⚡ REGIME DIVERGENCE</span>
+        <span style="color:#e0e0e0;">
+            SPY: <span style="color:{BADGE_COLORS[spy_regime]};font-weight:600;">{spy_regime}</span>
+            &nbsp;|&nbsp;
+            BTC: <span style="color:{BADGE_COLORS[btc_regime]};font-weight:600;">{btc_regime}</span>
+        </span>
+    </div>
+    """, unsafe_allow_html=True)
+
 st.markdown("")
 
 
 # =====================================================
 # TABS
 # =====================================================
-tab_spy, tab_btc, tab_technicals, tab_alerts, tab_report, tab_analysis, tab_methodology = st.tabs([
-    "📈 SPY Regime",
-    "🟠 BTC Regime",
+tab_spy, tab_btc, tab_technicals, tab_backtest, tab_drawdown, tab_intermarket, tab_alerts, tab_report, tab_analysis, tab_methodology = st.tabs([
+    "📈 SPY",
+    "🟠 BTC",
     "🔬 Technicals",
+    "🧪 Backtest",
+    "📉 Drawdowns",
+    "🌐 Intermarket",
     "🔔 Alerts",
-    "📋 Daily Report",
+    "📋 Report",
     "📊 Analysis",
-    "📖 Methodology",
+    "📖 Method",
 ])
 
 
@@ -821,7 +878,328 @@ with tab_technicals:
 
 
 # ─────────────────────────────────────────────────────
-# TAB 4: ALERTS
+# TAB 4: BACKTEST
+# ─────────────────────────────────────────────────────
+with tab_backtest:
+    st.markdown("### Strategy Backtester")
+    st.caption("Compares a regime-following strategy vs buy-and-hold. "
+               "Risk-On = fully invested, Neutral = 50% invested, Risk-Off = 100% cash.")
+
+    bt_asset = st.radio("Backtest asset", ["SPY", "BTC"], horizontal=True, key="bt_asset")
+    bt_regime_col = f"{bt_asset}_Regime"
+    bt_return_col = f"{bt_asset}_Return"
+
+    # Strategy: position sizing by regime
+    regime_exposure = {"Risk-On": 1.0, "Neutral": 0.5, "Risk-Off": 0.0}
+    df["BT_Exposure"] = df[bt_regime_col].map(regime_exposure)
+    # Use previous day's regime to avoid lookahead
+    df["BT_Exposure_Lag"] = df["BT_Exposure"].shift(1).fillna(0)
+    df["BT_StratReturn"] = df[bt_return_col] * df["BT_Exposure_Lag"]
+
+    # Equity curves
+    df["BT_BuyHold"] = (1 + df[bt_return_col]).cumprod()
+    df["BT_Strategy"] = (1 + df["BT_StratReturn"]).cumprod()
+
+    # Stats
+    bh_total = (df["BT_BuyHold"].iloc[-1] / df["BT_BuyHold"].iloc[0] - 1) * 100
+    st_total = (df["BT_Strategy"].iloc[-1] / df["BT_Strategy"].iloc[0] - 1) * 100
+
+    bh_peak = df["BT_BuyHold"].cummax()
+    bh_dd = ((df["BT_BuyHold"] / bh_peak) - 1) * 100
+    bh_maxdd = bh_dd.min()
+
+    st_peak = df["BT_Strategy"].cummax()
+    st_dd = ((df["BT_Strategy"] / st_peak) - 1) * 100
+    st_maxdd = st_dd.min()
+
+    ann_factor = 252
+    bh_vol = df[bt_return_col].std() * np.sqrt(ann_factor) * 100
+    st_vol = df["BT_StratReturn"].std() * np.sqrt(ann_factor) * 100
+    years = len(df) / ann_factor
+    bh_cagr = ((df["BT_BuyHold"].iloc[-1] / df["BT_BuyHold"].iloc[0]) ** (1 / years) - 1) * 100
+    st_cagr = ((df["BT_Strategy"].iloc[-1] / df["BT_Strategy"].iloc[0]) ** (1 / years) - 1) * 100
+    bh_sharpe = bh_cagr / bh_vol if bh_vol > 0 else 0
+    st_sharpe = st_cagr / st_vol if st_vol > 0 else 0
+
+    # Stats cards
+    bs1, bs2, bs3, bs4 = st.columns(4)
+    for col, label, bh_val, st_val, fmt in [
+        (bs1, "Total Return", bh_total, st_total, "+.1f"),
+        (bs2, "CAGR", bh_cagr, st_cagr, "+.1f"),
+        (bs3, "Max Drawdown", bh_maxdd, st_maxdd, ".1f"),
+        (bs4, "Sharpe Ratio", bh_sharpe, st_sharpe, ".2f"),
+    ]:
+        winner = "#4ade80" if (st_val > bh_val if "Drawdown" not in label else st_val > bh_val) else "#f87171"
+        with col:
+            st.markdown(f"""<div class="metric-card">
+            <div class="metric-label">{label}</div>
+            <div style="display:flex;justify-content:space-around;margin-top:8px;">
+                <div><span style="color:#8b95a5;font-size:0.75rem;">Buy&Hold</span><br>
+                <span style="color:#60a5fa;font-weight:600;font-size:1.1rem;">{bh_val:{fmt}}{'%' if 'Ratio' not in label else ''}</span></div>
+                <div><span style="color:#8b95a5;font-size:0.75rem;">Strategy</span><br>
+                <span style="color:{winner};font-weight:600;font-size:1.1rem;">{st_val:{fmt}}{'%' if 'Ratio' not in label else ''}</span></div>
+            </div></div>""", unsafe_allow_html=True)
+
+    # Equity curve chart
+    bt_fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.06,
+                            row_heights=[0.65, 0.35],
+                            subplot_titles=[f"{bt_asset} Equity Curves (Normalized)", "Drawdown"])
+
+    bt_fig.add_trace(go.Scatter(
+        x=df.index, y=df["BT_BuyHold"], line=dict(width=2, color="#60a5fa"),
+        name="Buy & Hold", hovertemplate="%{x|%b %d %Y}<br>%{y:.2f}x<extra>B&H</extra>",
+    ), row=1, col=1)
+    bt_fig.add_trace(go.Scatter(
+        x=df.index, y=df["BT_Strategy"], line=dict(width=2, color="#4ade80"),
+        name="Regime Strategy", hovertemplate="%{x|%b %d %Y}<br>%{y:.2f}x<extra>Strategy</extra>",
+    ), row=1, col=1)
+
+    bt_fig.add_trace(go.Scatter(
+        x=df.index, y=bh_dd, line=dict(width=1.2, color="#60a5fa"),
+        name="B&H DD", fill="tozeroy", fillcolor="rgba(96,165,250,0.1)",
+        hovertemplate="%{x|%b %d %Y}<br>%{y:.1f}%<extra>B&H DD</extra>",
+    ), row=2, col=1)
+    bt_fig.add_trace(go.Scatter(
+        x=df.index, y=st_dd, line=dict(width=1.2, color="#4ade80"),
+        name="Strat DD", fill="tozeroy", fillcolor="rgba(74,222,128,0.1)",
+        hovertemplate="%{x|%b %d %Y}<br>%{y:.1f}%<extra>Strat DD</extra>",
+    ), row=2, col=1)
+
+    add_regime_shading(bt_fig, df, bt_regime_col, f"{bt_asset}_RegimeBlock", [1, 2])
+    bt_fig.update_layout(height=600, **DARK_LAYOUT)
+    for i in range(1, 3):
+        bt_fig.update_yaxes(gridcolor="rgba(255,255,255,0.08)", row=i, col=1)
+        bt_fig.update_xaxes(tickformat="%b '%y", showgrid=True, gridcolor="rgba(255,255,255,0.08)", row=i, col=1)
+    bt_fig.update_yaxes(title_text="Growth of $1", row=1, col=1)
+    bt_fig.update_yaxes(title_text="Drawdown %", row=2, col=1)
+
+    st.plotly_chart(bt_fig, use_container_width=True, key="bt_chart")
+
+    # Time in each regime
+    regime_pcts = df[bt_regime_col].value_counts(normalize=True) * 100
+    st.markdown("#### Time in Each Regime")
+    rp1, rp2, rp3 = st.columns(3)
+    for col, regime in [(rp1, "Risk-On"), (rp2, "Neutral"), (rp3, "Risk-Off")]:
+        pct = regime_pcts.get(regime, 0)
+        with col:
+            st.markdown(f"""<div class="metric-card">
+            <div class="metric-label">{regime}</div>
+            <div class="metric-value" style="color:{BADGE_COLORS[regime]};">{pct:.0f}%</div>
+            <div style="color:#8b95a5;margin-top:4px;font-size:0.8rem;">of trading days</div>
+            </div>""", unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────────────
+# TAB 5: DRAWDOWNS
+# ─────────────────────────────────────────────────────
+with tab_drawdown:
+    st.markdown("### Drawdown Analysis")
+
+    # Current drawdowns
+    spy_dd_now = df["SPY_Drawdown"].iloc[-1]
+    btc_dd_now = df["BTC_Drawdown"].iloc[-1]
+    spy_dd_max = df["SPY_Drawdown"].min()
+    btc_dd_max = df["BTC_Drawdown"].min()
+
+    dd1, dd2, dd3, dd4 = st.columns(4)
+    with dd1:
+        c = "#f87171" if spy_dd_now < -5 else ("#fbbf24" if spy_dd_now < -2 else "#4ade80")
+        st.markdown(f"""<div class="metric-card"><div class="metric-label">SPY Current DD</div>
+        <div class="metric-value" style="color:{c};">{spy_dd_now:.1f}%</div></div>""", unsafe_allow_html=True)
+    with dd2:
+        st.markdown(f"""<div class="metric-card"><div class="metric-label">SPY Max DD</div>
+        <div class="metric-value" style="color:#f87171;">{spy_dd_max:.1f}%</div></div>""", unsafe_allow_html=True)
+    with dd3:
+        c = "#f87171" if btc_dd_now < -15 else ("#fbbf24" if btc_dd_now < -5 else "#4ade80")
+        st.markdown(f"""<div class="metric-card"><div class="metric-label">BTC Current DD</div>
+        <div class="metric-value" style="color:{c};">{btc_dd_now:.1f}%</div></div>""", unsafe_allow_html=True)
+    with dd4:
+        st.markdown(f"""<div class="metric-card"><div class="metric-label">BTC Max DD</div>
+        <div class="metric-value" style="color:#f87171;">{btc_dd_max:.1f}%</div></div>""", unsafe_allow_html=True)
+
+    # Drawdown time series
+    dd_fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.06,
+                            subplot_titles=["SPY Drawdown from ATH", "BTC Drawdown from ATH"])
+
+    dd_fig.add_trace(go.Scatter(
+        x=df.index, y=df["SPY_Drawdown"], line=dict(width=1.5, color="#60a5fa"),
+        fill="tozeroy", fillcolor="rgba(96,165,250,0.12)", name="SPY DD",
+        hovertemplate="%{x|%b %d %Y}<br>%{y:.1f}%<extra>SPY</extra>",
+    ), row=1, col=1)
+    dd_fig.add_trace(go.Scatter(
+        x=df.index, y=df["BTC_Drawdown"], line=dict(width=1.5, color="#fb923c"),
+        fill="tozeroy", fillcolor="rgba(251,146,60,0.12)", name="BTC DD",
+        hovertemplate="%{x|%b %d %Y}<br>%{y:.1f}%<extra>BTC</extra>",
+    ), row=2, col=1)
+
+    add_regime_shading(dd_fig, df, "SPY_Regime", "SPY_RegimeBlock", [1])
+    add_regime_shading(dd_fig, df, "BTC_Regime", "BTC_RegimeBlock", [2])
+    dd_fig.update_layout(height=550, **DARK_LAYOUT)
+    for i in range(1, 3):
+        dd_fig.update_yaxes(gridcolor="rgba(255,255,255,0.08)", title_text="DD %", row=i, col=1)
+        dd_fig.update_xaxes(tickformat="%b '%y", showgrid=True, gridcolor="rgba(255,255,255,0.08)", row=i, col=1)
+
+    st.plotly_chart(dd_fig, use_container_width=True, key="dd_chart")
+
+    # Max drawdown by regime
+    st.markdown("### Max Drawdown by Regime")
+    st.caption("Worst drawdown experienced within each regime classification.")
+    dd_by_regime = []
+    for asset in ["SPY", "BTC"]:
+        r_col = f"{asset}_Regime"
+        dd_col = f"{asset}_Drawdown"
+        for regime in ["Risk-On", "Neutral", "Risk-Off"]:
+            mask = df[r_col] == regime
+            if mask.sum() > 0:
+                dd_by_regime.append({
+                    "Asset": asset,
+                    "Regime": regime,
+                    "Max DD %": round(df.loc[mask, dd_col].min(), 1),
+                    "Avg DD %": round(df.loc[mask, dd_col].mean(), 1),
+                    "Days": int(mask.sum()),
+                })
+    dd_regime_df = pd.DataFrame(dd_by_regime)
+
+    def style_dd(tbl):
+        def _bg(val):
+            c = {"Risk-On": "#1a3a1a", "Neutral": "#3a3a1a", "Risk-Off": "#3a1a1a"}.get(val, "")
+            return f"background-color:{c};color:#e0e0e0"
+        def _dd(val):
+            try:
+                v = float(val)
+                return "color:#f87171;font-weight:600" if v < -10 else ("color:#fbbf24" if v < -3 else "color:#4ade80")
+            except (ValueError, TypeError):
+                return ""
+        return tbl.style.map(_bg, subset=["Regime"]).map(_dd, subset=["Max DD %", "Avg DD %"])
+
+    st.dataframe(style_dd(dd_regime_df), use_container_width=True, hide_index=True, height=250)
+
+
+# ─────────────────────────────────────────────────────
+# TAB 6: INTERMARKET
+# ─────────────────────────────────────────────────────
+with tab_intermarket:
+    st.markdown("### Intermarket Context")
+    st.caption("DXY (US Dollar Index) and Gold as macro context alongside regime classification.")
+
+    has_dxy = "DXY" in df.columns and df["DXY"].notna().sum() > 100
+    has_gold = "GOLD" in df.columns and df["GOLD"].notna().sum() > 100
+
+    if has_dxy or has_gold:
+        # Current values
+        im_cols = st.columns(4)
+        if has_dxy:
+            dxy_now = df["DXY"].iloc[-1]
+            dxy_1d = (df["DXY"].iloc[-1] / df["DXY"].iloc[-2] - 1) * 100 if len(df) > 1 else 0
+            dxy_c = "#f87171" if dxy_1d > 0 else "#4ade80"  # strong dollar generally risk-off
+            with im_cols[0]:
+                st.markdown(f"""<div class="metric-card"><div class="metric-label">DXY (Dollar)</div>
+                <div class="metric-value">{dxy_now:.2f}</div>
+                <div style="color:{dxy_c};margin-top:4px;font-size:0.9rem;font-weight:600;">{dxy_1d:+.2f}%</div>
+                </div>""", unsafe_allow_html=True)
+
+            dxy_50 = df["DXY"].rolling(50).mean().iloc[-1]
+            dxy_trend = "Above 50d" if dxy_now > dxy_50 else "Below 50d"
+            dxy_trend_c = "#f87171" if dxy_now > dxy_50 else "#4ade80"
+            with im_cols[1]:
+                st.markdown(f"""<div class="metric-card"><div class="metric-label">DXY vs 50-SMA</div>
+                <div class="metric-value" style="color:{dxy_trend_c};font-size:1.2rem;">{dxy_trend}</div>
+                <div style="color:#8b95a5;margin-top:4px;font-size:0.8rem;">50-SMA: {dxy_50:.2f}</div>
+                </div>""", unsafe_allow_html=True)
+
+        if has_gold:
+            gold_now = df["GOLD"].iloc[-1]
+            gold_1d = (df["GOLD"].iloc[-1] / df["GOLD"].iloc[-2] - 1) * 100 if len(df) > 1 else 0
+            gold_c = "#4ade80" if gold_1d > 0 else "#f87171"
+            with im_cols[2]:
+                st.markdown(f"""<div class="metric-card"><div class="metric-label">Gold</div>
+                <div class="metric-value">${gold_now:,.0f}</div>
+                <div style="color:{gold_c};margin-top:4px;font-size:0.9rem;font-weight:600;">{gold_1d:+.2f}%</div>
+                </div>""", unsafe_allow_html=True)
+
+            gold_50 = df["GOLD"].rolling(50).mean().iloc[-1]
+            gold_trend = "Above 50d" if gold_now > gold_50 else "Below 50d"
+            gold_trend_c = "#4ade80" if gold_now > gold_50 else "#f87171"
+            with im_cols[3]:
+                st.markdown(f"""<div class="metric-card"><div class="metric-label">Gold vs 50-SMA</div>
+                <div class="metric-value" style="color:{gold_trend_c};font-size:1.2rem;">{gold_trend}</div>
+                <div style="color:#8b95a5;margin-top:4px;font-size:0.8rem;">50-SMA: ${gold_50:,.0f}</div>
+                </div>""", unsafe_allow_html=True)
+
+        # Intermarket charts
+        im_rows = int(has_dxy) + int(has_gold)
+        im_titles = []
+        if has_dxy:
+            im_titles.append("DXY (US Dollar Index)")
+        if has_gold:
+            im_titles.append("Gold (GC=F)")
+
+        im_fig = make_subplots(rows=im_rows, cols=1, shared_xaxes=True, vertical_spacing=0.08,
+                                subplot_titles=im_titles)
+
+        row_i = 1
+        if has_dxy:
+            im_fig.add_trace(go.Scatter(
+                x=df.index, y=df["DXY"], line=dict(width=2, color="#fbbf24"),
+                name="DXY", hovertemplate="%{x|%b %d %Y}<br>%{y:.2f}<extra>DXY</extra>",
+            ), row=row_i, col=1)
+            dxy_sma = df["DXY"].rolling(50).mean()
+            im_fig.add_trace(go.Scatter(
+                x=df.index, y=dxy_sma, line=dict(width=1.2, color="#fbbf24", dash="dash"),
+                name="DXY 50-SMA", opacity=0.6,
+            ), row=row_i, col=1)
+            add_regime_shading(im_fig, df, "SPY_Regime", "SPY_RegimeBlock", [row_i])
+            row_i += 1
+
+        if has_gold:
+            im_fig.add_trace(go.Scatter(
+                x=df.index, y=df["GOLD"], line=dict(width=2, color="#fbbf24"),
+                name="Gold", hovertemplate="%{x|%b %d %Y}<br>$%{y:,.0f}<extra>Gold</extra>",
+            ), row=row_i, col=1)
+            gold_sma = df["GOLD"].rolling(50).mean()
+            im_fig.add_trace(go.Scatter(
+                x=df.index, y=gold_sma, line=dict(width=1.2, color="#fbbf24", dash="dash"),
+                name="Gold 50-SMA", opacity=0.6,
+            ), row=row_i, col=1)
+            add_regime_shading(im_fig, df, "BTC_Regime", "BTC_RegimeBlock", [row_i])
+
+        im_fig.update_layout(height=250 + im_rows * 250, **DARK_LAYOUT)
+        for i in range(1, im_rows + 1):
+            im_fig.update_yaxes(gridcolor="rgba(255,255,255,0.08)", row=i, col=1)
+            im_fig.update_xaxes(tickformat="%b '%y", showgrid=True, gridcolor="rgba(255,255,255,0.08)", row=i, col=1)
+
+        st.plotly_chart(im_fig, use_container_width=True, key="im_chart")
+
+        # Correlation matrix
+        st.markdown("### Cross-Asset Correlations (63-day rolling)")
+        corr_assets = ["SPY", "BTC"]
+        if has_dxy:
+            corr_assets.append("DXY")
+        if has_gold:
+            corr_assets.append("GOLD")
+
+        corr_data = df[corr_assets].pct_change()
+        corr_matrix = corr_data.tail(63).corr()
+
+        corr_heat = go.Figure(data=go.Heatmap(
+            z=corr_matrix.values,
+            x=corr_matrix.columns.tolist(),
+            y=corr_matrix.index.tolist(),
+            colorscale=[[0, "#f87171"], [0.5, "#1a1d24"], [1, "#4ade80"]],
+            zmin=-1, zmax=1,
+            text=np.round(corr_matrix.values, 2),
+            texttemplate="%{text}",
+            textfont=dict(color="#e0e0e0", size=14),
+        ))
+        corr_heat.update_layout(height=350, **DARK_LAYOUT)
+        st.plotly_chart(corr_heat, use_container_width=True, key="corr_heat")
+
+    else:
+        st.info("DXY and Gold data unavailable. Check your connection.")
+
+
+# ─────────────────────────────────────────────────────
+# TAB 7: ALERTS
 # ─────────────────────────────────────────────────────
 with tab_alerts:
     if not alert_on_regime_change:
@@ -1049,7 +1427,7 @@ with tab_analysis:
 # ─────────────────────────────────────────────────────
 with tab_methodology:
     st.markdown("""
-### Dual Regime Architecture
+### Dual Regime Architecture (v5.0)
 
 SPY and BTC are classified independently using asset-specific factor models.
 
@@ -1080,6 +1458,32 @@ on-chain activity, and speculative momentum. A unified score would dilute both s
 2. EWM smoothing (span=10) to reduce whipsawing
 3. Threshold at ±0.4 → regime classification
 
+#### Score Velocity
+The 5-day rate of change of each composite score, indicating whether macro conditions
+are improving or deteriorating. Displayed as directional arrows (▲/▼/►) beneath each gauge.
+Useful for anticipating regime transitions before they trigger.
+
+#### Regime Divergence
+When SPY and BTC regimes disagree (e.g., SPY Risk-On but BTC Risk-Off), a divergence
+banner appears. Persistent divergences often signal rotational shifts or decorrelation events
+worth monitoring for position sizing.
+
+#### Strategy Backtester
+Compares a regime-following strategy against buy-and-hold. The regime strategy allocates
+100% in Risk-On, 50% in Neutral, and 0% in Risk-Off. Exposure uses a 1-day lag to avoid
+lookahead bias. Metrics include total return, CAGR, max drawdown, Sharpe ratio, and
+time-in-regime breakdowns.
+
+#### Drawdown Analysis
+Tracks peak-to-trough drawdowns from all-time highs for both assets. Per-regime max
+drawdown tables reveal which environments produce the deepest losses. Current drawdown
+cards provide at-a-glance risk context.
+
+#### Intermarket Context
+DXY (US Dollar Index) and Gold provide macro backdrop. A strong dollar often pressures
+risk assets; gold strength may signal flight-to-safety flows. The 63-day rolling cross-asset
+correlation heatmap reveals changing intermarket relationships.
+
 #### On-Chain Proxies
 - **MVRV Proxy:** Price / 200-day SMA approximates market value / realized value
 - **Volume Ratio:** Daily volume vs 50-day average measures exchange activity
@@ -1103,5 +1507,5 @@ if auto_refresh:
 st.markdown("---")
 st.markdown(
     f"<p style='text-align:center;color:#555;font-size:0.8rem;'>"
-    f"Market Immune System v4.0 — Data through {df.index[-1].strftime('%b %d, %Y')} via Yahoo Finance — Not financial advice"
+    f"Market Immune System v5.0 — Data through {df.index[-1].strftime('%b %d, %Y')} via Yahoo Finance — Not financial advice"
     f"</p>", unsafe_allow_html=True)
