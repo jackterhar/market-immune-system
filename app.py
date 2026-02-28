@@ -260,19 +260,23 @@ def load_data(period: str) -> pd.DataFrame:
     if "GOLD" in df.columns:
         df["GOLD"] = df["GOLD"].ffill().bfill()
 
-    # --- BTC drawdown from full 7-day series (before filtering to equity days) ---
-    # This ensures weekend/holiday ATHs and troughs are captured accurately.
+    # --- Filter to equity trading days first ---
+    df = df.dropna(subset=["SPY"])
+    core_cols = [c for c in df.columns if c not in ("BTC_Peak_Full", "BTC_DD_Full")]
+    df = df.dropna(subset=core_cols)
+
+    # --- BTC drawdown from full 7-day series (captures weekend/holiday ATHs) ---
     if not btc_df.empty:
         btc_full = btc_df["BTC"].dropna().sort_index()
         btc_peak_full = btc_full.cummax()
         btc_dd_full = (btc_full / btc_peak_full - 1) * 100
-        # Map onto combined index via forward-fill so equity days inherit
-        # the most recent weekend peak / drawdown value
+        # Map onto equity-day index; ffill carries weekend peaks to Monday
         df["BTC_Peak_Full"] = btc_peak_full.reindex(df.index, method="ffill")
         df["BTC_DD_Full"] = btc_dd_full.reindex(df.index, method="ffill")
+        # bfill for any leading NaNs if BTC series starts after SPY
+        df["BTC_Peak_Full"] = df["BTC_Peak_Full"].bfill()
+        df["BTC_DD_Full"] = df["BTC_DD_Full"].fillna(0.0)
 
-    df = df.dropna(subset=["SPY"])
-    df = df.dropna()
     return df
 
 
