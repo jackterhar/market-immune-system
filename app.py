@@ -260,6 +260,17 @@ def load_data(period: str) -> pd.DataFrame:
     if "GOLD" in df.columns:
         df["GOLD"] = df["GOLD"].ffill().bfill()
 
+    # --- BTC drawdown from full 7-day series (before filtering to equity days) ---
+    # This ensures weekend/holiday ATHs and troughs are captured accurately.
+    if not btc_df.empty:
+        btc_full = btc_df["BTC"].dropna().sort_index()
+        btc_peak_full = btc_full.cummax()
+        btc_dd_full = (btc_full / btc_peak_full - 1) * 100
+        # Map onto combined index via forward-fill so equity days inherit
+        # the most recent weekend peak / drawdown value
+        df["BTC_Peak_Full"] = btc_peak_full.reindex(df.index, method="ffill")
+        df["BTC_DD_Full"] = btc_dd_full.reindex(df.index, method="ffill")
+
     df = df.dropna(subset=["SPY"])
     df = df.dropna()
     return df
@@ -434,8 +445,13 @@ df["BTC_Score_Velocity"] = df["BTC_Score"].diff(5)
 # =====================================================
 df["SPY_Peak"] = df["SPY"].cummax()
 df["SPY_Drawdown"] = (df["SPY"] / df["SPY_Peak"] - 1) * 100
-df["BTC_Peak"] = df["BTC"].cummax()
-df["BTC_Drawdown"] = (df["BTC"] / df["BTC_Peak"] - 1) * 100
+# BTC drawdown: use full 7-day series (captures weekend/holiday ATHs)
+if "BTC_DD_Full" in df.columns:
+    df["BTC_Peak"] = df["BTC_Peak_Full"]
+    df["BTC_Drawdown"] = df["BTC_DD_Full"]
+else:
+    df["BTC_Peak"] = df["BTC"].cummax()
+    df["BTC_Drawdown"] = (df["BTC"] / df["BTC_Peak"] - 1) * 100
 
 # =====================================================
 # REGIME DIVERGENCE
