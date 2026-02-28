@@ -381,7 +381,7 @@ BADGE_COLORS = {
 DARK_LAYOUT = dict(
     template="plotly_dark",
     paper_bgcolor="#0e1117",
-    plot_bgcolor="#0e1117",
+    plot_bgcolor="#161b22",
     font=dict(family="Inter, system-ui, sans-serif", size=12, color="#c8cdd5"),
     margin=dict(t=40, b=30, l=50, r=20),
     hovermode="x unified",
@@ -532,45 +532,45 @@ with tab_spy:
     )
 
     fig.add_trace(go.Scatter(
-        x=df.index, y=df["SPY"], line=dict(width=1.5, color="#3b82f6"),
+        x=df.index, y=df["SPY"], line=dict(width=2, color="#60a5fa"),
         name="SPY", hovertemplate="%{x|%b %d %Y}<br>$%{y:.2f}<extra>SPY</extra>",
     ), row=1, col=1)
 
     if show_bbands:
         fig.add_trace(go.Scatter(x=df.index, y=df["SPY_BB_Upper"],
-                      line=dict(width=0.8, color="rgba(99,102,241,0.3)"),
+                      line=dict(width=0.8, color="rgba(165,180,252,0.5)"),
                       name="BB Upper", showlegend=False), row=1, col=1)
         fig.add_trace(go.Scatter(x=df.index, y=df["SPY_BB_Lower"],
-                      line=dict(width=0.8, color="rgba(99,102,241,0.3)"),
+                      line=dict(width=0.8, color="rgba(165,180,252,0.5)"),
                       name="BB Lower", showlegend=False,
                       fill="tonexty", fillcolor="rgba(99,102,241,0.05)"), row=1, col=1)
 
     fig.add_trace(go.Scatter(
-        x=df.index, y=df["SPY_Score"], line=dict(width=2, color="#818cf8"),
+        x=df.index, y=df["SPY_Score"], line=dict(width=2.5, color="#a5b4fc"),
         name="SPY Score", hovertemplate="%{x|%b %d %Y}<br>Score: %{y:.3f}<extra></extra>",
     ), row=2, col=1)
-    fig.add_hline(y=upper_thresh, line_dash="dot", line_color="rgba(34,197,94,0.5)", row=2, col=1)
-    fig.add_hline(y=lower_thresh, line_dash="dot", line_color="rgba(239,68,68,0.5)", row=2, col=1)
-    fig.add_hline(y=0, line_dash="dot", line_color="rgba(150,150,150,0.3)", row=2, col=1)
+    fig.add_hline(y=upper_thresh, line_dash="dot", line_color="rgba(74,222,128,0.7)", row=2, col=1)
+    fig.add_hline(y=lower_thresh, line_dash="dot", line_color="rgba(248,113,113,0.7)", row=2, col=1)
+    fig.add_hline(y=0, line_dash="dot", line_color="rgba(200,200,200,0.4)", row=2, col=1)
 
     spy_contrib_meta = {
-        "SPY_Contrib_Trend_z": ("#3b82f6", "Trend 40%"),
-        "SPY_Contrib_VIX_z": ("#ef4444", "VIX −30%"),
-        "SPY_Contrib_YC_z": ("#10b981", "YC 15%"),
-        "SPY_Contrib_Vol_z": ("#f59e0b", "VolSp −15%"),
+        "SPY_Contrib_Trend_z": ("#60a5fa", "Trend 40%"),
+        "SPY_Contrib_VIX_z": ("#f87171", "VIX −30%"),
+        "SPY_Contrib_YC_z": ("#34d399", "YC 15%"),
+        "SPY_Contrib_Vol_z": ("#fbbf24", "VolSp −15%"),
     }
     for col_name, (color, label) in spy_contrib_meta.items():
         fig.add_trace(go.Scatter(
-            x=df.index, y=df[col_name], line=dict(width=1.2, color=color),
+            x=df.index, y=df[col_name], line=dict(width=1.8, color=color),
             name=label, hovertemplate="%{x|%b %d %Y}<br>%{y:.3f}<extra>" + label + "</extra>",
         ), row=3, col=1)
-    fig.add_hline(y=0, line_dash="dot", line_color="rgba(150,150,150,0.3)", row=3, col=1)
+    fig.add_hline(y=0, line_dash="dot", line_color="rgba(200,200,200,0.4)", row=3, col=1)
 
     add_regime_shading(fig, df, "SPY_Regime", "SPY_RegimeBlock", [1, 2, 3])
     fig.update_layout(height=900, **DARK_LAYOUT)
     for i in range(1, 4):
-        fig.update_yaxes(gridcolor="rgba(255,255,255,0.04)", row=i, col=1)
-        fig.update_xaxes(tickformat="%b '%y", showgrid=True, gridcolor="rgba(255,255,255,0.04)", row=i, col=1)
+        fig.update_yaxes(gridcolor="rgba(255,255,255,0.08)", row=i, col=1)
+        fig.update_xaxes(tickformat="%b '%y", showgrid=True, gridcolor="rgba(255,255,255,0.08)", row=i, col=1)
 
     st.plotly_chart(fig, use_container_width=True, key="spy_regime_chart")
 
@@ -586,45 +586,45 @@ with tab_btc:
     )
 
     fig2.add_trace(go.Scatter(
-        x=df.index, y=df["BTC"], line=dict(width=1.5, color="#f97316"),
+        x=df.index, y=df["BTC"], line=dict(width=2, color="#fb923c"),
         name="BTC", hovertemplate="%{x|%b %d %Y}<br>$%{y:,.0f}<extra>BTC</extra>",
     ), row=1, col=1)
 
     if show_bbands:
         fig2.add_trace(go.Scatter(x=df.index, y=df["BTC_BB_Upper"],
-                       line=dict(width=0.8, color="rgba(249,115,22,0.3)"),
+                       line=dict(width=0.8, color="rgba(251,191,36,0.5)"),
                        name="BB Upper", showlegend=False), row=1, col=1)
         fig2.add_trace(go.Scatter(x=df.index, y=df["BTC_BB_Lower"],
-                       line=dict(width=0.8, color="rgba(249,115,22,0.3)"),
+                       line=dict(width=0.8, color="rgba(251,191,36,0.5)"),
                        name="BB Lower", showlegend=False,
                        fill="tonexty", fillcolor="rgba(249,115,22,0.05)"), row=1, col=1)
 
     fig2.add_trace(go.Scatter(
-        x=df.index, y=df["BTC_Score"], line=dict(width=2, color="#f97316"),
+        x=df.index, y=df["BTC_Score"], line=dict(width=2.5, color="#fdba74"),
         name="BTC Score", hovertemplate="%{x|%b %d %Y}<br>Score: %{y:.3f}<extra></extra>",
     ), row=2, col=1)
-    fig2.add_hline(y=upper_thresh, line_dash="dot", line_color="rgba(34,197,94,0.5)", row=2, col=1)
-    fig2.add_hline(y=lower_thresh, line_dash="dot", line_color="rgba(239,68,68,0.5)", row=2, col=1)
-    fig2.add_hline(y=0, line_dash="dot", line_color="rgba(150,150,150,0.3)", row=2, col=1)
+    fig2.add_hline(y=upper_thresh, line_dash="dot", line_color="rgba(74,222,128,0.7)", row=2, col=1)
+    fig2.add_hline(y=lower_thresh, line_dash="dot", line_color="rgba(248,113,113,0.7)", row=2, col=1)
+    fig2.add_hline(y=0, line_dash="dot", line_color="rgba(200,200,200,0.4)", row=2, col=1)
 
     btc_contrib_meta = {
-        "BTC_Contrib_Trend_z": ("#f97316", "Mom 35%"),
-        "BTC_Contrib_RVol_z": ("#ef4444", "RVol −25%"),
-        "BTC_Contrib_VolRatio_z": ("#3b82f6", "VolR 15%"),
-        "BTC_Contrib_MVRV_z": ("#a78bfa", "MVRV 25%"),
+        "BTC_Contrib_Trend_z": ("#fb923c", "Mom 35%"),
+        "BTC_Contrib_RVol_z": ("#f87171", "RVol −25%"),
+        "BTC_Contrib_VolRatio_z": ("#60a5fa", "VolR 15%"),
+        "BTC_Contrib_MVRV_z": ("#c4b5fd", "MVRV 25%"),
     }
     for col_name, (color, label) in btc_contrib_meta.items():
         fig2.add_trace(go.Scatter(
-            x=df.index, y=df[col_name], line=dict(width=1.2, color=color),
+            x=df.index, y=df[col_name], line=dict(width=1.8, color=color),
             name=label, hovertemplate="%{x|%b %d %Y}<br>%{y:.3f}<extra>" + label + "</extra>",
         ), row=3, col=1)
-    fig2.add_hline(y=0, line_dash="dot", line_color="rgba(150,150,150,0.3)", row=3, col=1)
+    fig2.add_hline(y=0, line_dash="dot", line_color="rgba(200,200,200,0.4)", row=3, col=1)
 
     add_regime_shading(fig2, df, "BTC_Regime", "BTC_RegimeBlock", [1, 2, 3])
     fig2.update_layout(height=900, **DARK_LAYOUT)
     for i in range(1, 4):
-        fig2.update_yaxes(gridcolor="rgba(255,255,255,0.04)", row=i, col=1)
-        fig2.update_xaxes(tickformat="%b '%y", showgrid=True, gridcolor="rgba(255,255,255,0.04)", row=i, col=1)
+        fig2.update_yaxes(gridcolor="rgba(255,255,255,0.08)", row=i, col=1)
+        fig2.update_xaxes(tickformat="%b '%y", showgrid=True, gridcolor="rgba(255,255,255,0.08)", row=i, col=1)
 
     st.plotly_chart(fig2, use_container_width=True, key="btc_regime_chart")
 
@@ -754,10 +754,10 @@ with tab_technicals:
         tech_fig.add_trace(go.Scatter(x=df.index, y=df[f"{prefix}_BB_Mid"],
                            line=dict(width=1, color="#818cf8", dash="dash"), name="BB Mid"), row=1, col=1)
         tech_fig.add_trace(go.Scatter(x=df.index, y=df[f"{prefix}_BB_Upper"],
-                           line=dict(width=0.8, color="rgba(129,140,248,0.4)"),
+                           line=dict(width=0.8, color="rgba(165,180,252,0.6)"),
                            name="BB Upper", showlegend=False), row=1, col=1)
         tech_fig.add_trace(go.Scatter(x=df.index, y=df[f"{prefix}_BB_Lower"],
-                           line=dict(width=0.8, color="rgba(129,140,248,0.4)"),
+                           line=dict(width=0.8, color="rgba(165,180,252,0.6)"),
                            name="BB Lower", showlegend=False,
                            fill="tonexty", fillcolor="rgba(129,140,248,0.07)"), row=1, col=1)
 
@@ -766,8 +766,8 @@ with tab_technicals:
         tech_fig.add_trace(go.Scatter(
             x=df.index, y=df[f"{prefix}_RSI"], line=dict(width=1.5, color="#a78bfa"), name="RSI",
         ), row=current_row, col=1)
-        tech_fig.add_hline(y=70, line_dash="dot", line_color="rgba(239,68,68,0.5)", row=current_row, col=1)
-        tech_fig.add_hline(y=30, line_dash="dot", line_color="rgba(34,197,94,0.5)", row=current_row, col=1)
+        tech_fig.add_hline(y=70, line_dash="dot", line_color="rgba(248,113,113,0.7)", row=current_row, col=1)
+        tech_fig.add_hline(y=30, line_dash="dot", line_color="rgba(74,222,128,0.7)", row=current_row, col=1)
         tech_fig.add_hrect(y0=70, y1=100, fillcolor="rgba(239,68,68,0.05)", line_width=0, row=current_row, col=1)
         tech_fig.add_hrect(y0=0, y1=30, fillcolor="rgba(34,197,94,0.05)", line_width=0, row=current_row, col=1)
         current_row += 1
@@ -780,13 +780,13 @@ with tab_technicals:
                            line=dict(width=1.5, color="#3b82f6"), name="MACD"), row=current_row, col=1)
         tech_fig.add_trace(go.Scatter(x=df.index, y=df[f"{prefix}_Signal"],
                            line=dict(width=1.5, color="#f97316"), name="Signal"), row=current_row, col=1)
-        tech_fig.add_hline(y=0, line_dash="dot", line_color="rgba(150,150,150,0.3)", row=current_row, col=1)
+        tech_fig.add_hline(y=0, line_dash="dot", line_color="rgba(200,200,200,0.4)", row=current_row, col=1)
 
     add_regime_shading(tech_fig, df, regime_col, block_col, list(range(1, tech_rows + 1)))
     tech_fig.update_layout(height=250 + tech_rows * 220, **DARK_LAYOUT)
     for i in range(1, tech_rows + 1):
-        tech_fig.update_yaxes(gridcolor="rgba(255,255,255,0.04)", row=i, col=1)
-        tech_fig.update_xaxes(tickformat="%b '%y", showgrid=True, gridcolor="rgba(255,255,255,0.04)", row=i, col=1)
+        tech_fig.update_yaxes(gridcolor="rgba(255,255,255,0.08)", row=i, col=1)
+        tech_fig.update_xaxes(tickformat="%b '%y", showgrid=True, gridcolor="rgba(255,255,255,0.08)", row=i, col=1)
 
     st.plotly_chart(tech_fig, use_container_width=True, key="tech_chart")
 
@@ -1038,7 +1038,7 @@ with tab_analysis:
         x=df.index, y=rolling_corr, line=dict(width=1.5, color="#a78bfa"),
         name="63d Corr", hovertemplate="%{x|%b %d %Y}<br>Corr: %{y:.3f}<extra></extra>",
     ))
-    rc_fig.add_hline(y=0, line_dash="dot", line_color="rgba(150,150,150,0.3)")
+    rc_fig.add_hline(y=0, line_dash="dot", line_color="rgba(200,200,200,0.4)")
     rc_fig.add_hline(y=0.5, line_dash="dot", line_color="rgba(239,68,68,0.4)")
     rc_fig.update_layout(height=300, **DARK_LAYOUT, yaxis_title="Correlation")
     st.plotly_chart(rc_fig, use_container_width=True, key="rolling_corr")
