@@ -1,9 +1,10 @@
 """
-Market Immune System — Dual Regime Engine v4.0
+Market Immune System — Dual Regime Engine v5.0
 ================================================
 Independent regime classification for SPY and BTC:
   • SPY regime: equity momentum, VIX, yield curve, vol spread
   • BTC regime: crypto momentum, realized vol, Fear & Greed, volume ratio
+  • BTC price data sourced from Coinbase Exchange API
 
 Usage:
   pip install streamlit pandas numpy yfinance plotly requests
@@ -20,6 +21,7 @@ from datetime import datetime, timedelta
 import requests
 import json
 import os
+import time
 
 # =====================================================
 # PAGE CONFIG
@@ -124,11 +126,51 @@ with st.sidebar:
 # DATA LOADER
 # =====================================================
 @st.cache_data(ttl=14400, show_spinner="Fetching market data…")
+def _fetch_coinbase_btc(start: datetime, end: datetime) -> pd.DataFrame:
+    """Fetch BTC-USD daily candles from Coinbase Exchange API.
+
+    The public endpoint returns max 300 candles per request,
+    so we paginate in 300-day windows and stitch together.
+    Returns DataFrame with columns: BTC, BTC_Volume indexed by date.
+    """
+    CB_URL = "https://api.exchange.coinbase.com/products/BTC-USD/candles"
+    GRANULARITY = 86400  # 1 day
+    MAX_CANDLES = 300
+    all_candles = []
+
+    window_start = start
+    while window_start < end:
+        window_end = min(window_start + timedelta(days=MAX_CANDLES), end)
+        params = {
+            "start": window_start.strftime("%Y-%m-%dT00:00:00Z"),
+            "end": window_end.strftime("%Y-%m-%dT00:00:00Z"),
+            "granularity": GRANULARITY,
+        }
+        resp = requests.get(CB_URL, params=params, timeout=15)
+        resp.raise_for_status()
+        candles = resp.json()
+        # Each candle: [timestamp, low, high, open, close, volume]
+        all_candles.extend(candles)
+        window_start = window_end
+        time.sleep(0.15)  # rate-limit courtesy
+
+    if not all_candles:
+        return pd.DataFrame()
+
+    cb = pd.DataFrame(all_candles, columns=["ts", "low", "high", "open", "close", "volume"])
+    cb["date"] = pd.to_datetime(cb["ts"], unit="s")
+    cb = cb.sort_values("date").drop_duplicates(subset="date", keep="last")
+    cb = cb.set_index("date")
+    result = pd.DataFrame({"BTC": cb["close"], "BTC_Volume": cb["volume"]})
+    result.index.name = None
+    return result
+
+
 def load_data(period: str) -> pd.DataFrame:
+    # --- Equity / Macro tickers from yfinance ---
     tickers = {
         "SPY": "SPY",
         "VIX": "^VIX",
-        "BTC": "BTC-USD",
         "TNX": "^TNX",
         "IRX": "^IRX",
         "DXY": "DX-Y.NYB",
@@ -152,18 +194,40 @@ def load_data(period: str) -> pd.DataFrame:
         except Exception as e:
             errors.append(f"{name} ({ticker}): {str(e)[:80]}")
 
-    # Also grab BTC volume for crypto-specific factors
-    btc_vol = None
+    # --- BTC from Coinbase Exchange API (with yfinance fallback) ---
+    period_days = {"2y": 730, "3y": 1095, "5y": 1825, "10y": 3650}
+    days = period_days.get(period, 1825)
+    end_dt = datetime.utcnow()
+    start_dt = end_dt - timedelta(days=days)
+
+    btc_df = pd.DataFrame()
     try:
-        btc_raw = yf.download("BTC-USD", period=period, auto_adjust=False, progress=False)
-        if not btc_raw.empty:
-            v = btc_raw["Volume"]
-            if isinstance(v, pd.DataFrame):
-                v = v.iloc[:, 0]
-            btc_vol = v.squeeze()
-            btc_vol.name = "BTC_Volume"
-    except Exception:
-        pass
+        btc_df = _fetch_coinbase_btc(start_dt, end_dt)
+        if not btc_df.empty:
+            st.caption("🟢 BTC price data: Coinbase Exchange")
+    except Exception as e:
+        errors.append(f"Coinbase API: {str(e)[:80]} — falling back to Yahoo Finance")
+
+    if btc_df.empty:
+        # Fallback to yfinance
+        try:
+            btc_raw = yf.download("BTC-USD", period=period, auto_adjust=False, progress=False)
+            if not btc_raw.empty:
+                close = btc_raw["Close"]
+                if isinstance(close, pd.DataFrame):
+                    close = close.iloc[:, 0]
+                vol = btc_raw["Volume"]
+                if isinstance(vol, pd.DataFrame):
+                    vol = vol.iloc[:, 0]
+                btc_df = pd.DataFrame({"BTC": close.squeeze(), "BTC_Volume": vol.squeeze()})
+                st.caption("🟡 BTC price data: Yahoo Finance (Coinbase unavailable)")
+            else:
+                errors.append("BTC: no data from either Coinbase or Yahoo Finance")
+        except Exception as e:
+            errors.append(f"BTC fallback: {str(e)[:80]}")
+
+    if not btc_df.empty:
+        data["BTC"] = btc_df["BTC"]
 
     if errors:
         for err in errors:
@@ -177,8 +241,8 @@ def load_data(period: str) -> pd.DataFrame:
     df = pd.concat(data.values(), axis=1)
     df.columns = list(data.keys())
 
-    if btc_vol is not None:
-        df["BTC_Volume"] = btc_vol
+    if not btc_df.empty and "BTC_Volume" in btc_df.columns:
+        df["BTC_Volume"] = btc_df["BTC_Volume"]
 
     if "TNX" in df.columns and "IRX" in df.columns:
         df["YieldCurve"] = df["TNX"] - df["IRX"]
