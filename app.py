@@ -247,8 +247,13 @@ def load_data(period: str) -> pd.DataFrame:
     df = pd.concat(data.values(), axis=1)
     df.columns = list(data.keys())
 
-    if not btc_df.empty and "BTC_Volume" in btc_df.columns:
-        df["BTC_Volume"] = btc_df["BTC_Volume"]
+    if not btc_df.empty:
+        if "BTC_Volume" in btc_df.columns:
+            df["BTC_Volume"] = btc_df["BTC_Volume"]
+        if "BTC_High" in btc_df.columns:
+            df["BTC_High"] = btc_df["BTC_High"]
+        if "BTC_Low" in btc_df.columns:
+            df["BTC_Low"] = btc_df["BTC_Low"]
 
     if "TNX" in df.columns and "IRX" in df.columns:
         df["YieldCurve"] = df["TNX"] - df["IRX"]
@@ -259,6 +264,10 @@ def load_data(period: str) -> pd.DataFrame:
     df["YieldCurve"] = df["YieldCurve"].ffill().bfill()
     df["VIX"] = df["VIX"].ffill()
     df["BTC"] = df["BTC"].ffill()
+    if "BTC_High" in df.columns:
+        df["BTC_High"] = df["BTC_High"].ffill()
+    if "BTC_Low" in df.columns:
+        df["BTC_Low"] = df["BTC_Low"].ffill()
     if "BTC_Volume" in df.columns:
         df["BTC_Volume"] = df["BTC_Volume"].ffill()
     if "DXY" in df.columns:
@@ -268,7 +277,7 @@ def load_data(period: str) -> pd.DataFrame:
 
     # --- Filter to equity trading days first ---
     df = df.dropna(subset=["SPY"])
-    core_cols = [c for c in df.columns if c not in ("BTC_Peak_Full", "BTC_DD_Full")]
+    core_cols = [c for c in df.columns if c not in ("BTC_Peak_Full", "BTC_DD_Full", "BTC_High", "BTC_Low")]
     df = df.dropna(subset=core_cols)
 
     # --- BTC drawdown from full 7-day series using HIGH for peak, LOW for trough ---
@@ -463,13 +472,20 @@ df["BTC_Score_Velocity"] = df["BTC_Score"].diff(5)
 # =====================================================
 df["SPY_Peak"] = df["SPY"].cummax()
 df["SPY_Drawdown"] = (df["SPY"] / df["SPY_Peak"] - 1) * 100
-# BTC drawdown: use full 7-day series (captures weekend/holiday ATHs)
-if "BTC_DD_Full" in df.columns:
+# BTC drawdown: use full 7-day high/low series when available
+if "BTC_DD_Full" in df.columns and df["BTC_DD_Full"].notna().any():
     df["BTC_Peak"] = df["BTC_Peak_Full"]
     df["BTC_Drawdown"] = df["BTC_DD_Full"]
+    _btc_dd_source = "Coinbase high/low candles (full 7-day series)"
+elif "BTC_High" in df.columns and "BTC_Low" in df.columns:
+    # Fallback: compute from high/low columns in the equity-day dataframe
+    df["BTC_Peak"] = df["BTC_High"].cummax()
+    df["BTC_Drawdown"] = (df["BTC_Low"] / df["BTC_Peak"] - 1) * 100
+    _btc_dd_source = "High/low candles (equity-day aligned)"
 else:
     df["BTC_Peak"] = df["BTC"].cummax()
     df["BTC_Drawdown"] = (df["BTC"] / df["BTC_Peak"] - 1) * 100
+    _btc_dd_source = "Close prices only (high/low unavailable)"
 
 # =====================================================
 # REGIME DIVERGENCE
@@ -1092,6 +1108,7 @@ with tab_backtest:
 # ─────────────────────────────────────────────────────
 with tab_drawdown:
     st.markdown("### Drawdown Analysis")
+    st.caption(f"BTC drawdown source: {_btc_dd_source} | Peak: ${df['BTC_Peak'].max():,.0f}")
 
     # Current drawdowns
     spy_dd_now = df["SPY_Drawdown"].iloc[-1]
