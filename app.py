@@ -513,8 +513,9 @@ df["Regime_Agreement"] = np.where(
 )
 
 # Trim to display window (extra history was fetched for z-score warmup)
-_display_days = {"2y": 504, "3y": 756, "5y": 1260, "10y": 2520}
-_n_display = _display_days.get(lookback, 504)
+# "2y" shows from ~Jan 2025 onward (~295 trading days to Mar 2026)
+_display_days = {"2y": 295, "3y": 756, "5y": 1260, "10y": 2520}
+_n_display = _display_days.get(lookback, 295)
 if len(df) > _n_display:
     df = df.iloc[-_n_display:]
 
