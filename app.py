@@ -179,6 +179,7 @@ def load_data(period: str) -> pd.DataFrame:
     data = {}
     errors = []
 
+    spy_ohlc = {}  # will hold Open, High, Low, Close for SPY candlestick
     for name, ticker in tickers.items():
         try:
             raw = yf.download(ticker, period=period, auto_adjust=False, progress=False)
@@ -191,6 +192,13 @@ def load_data(period: str) -> pd.DataFrame:
             close = close.squeeze()
             close.name = name
             data[name] = close
+            # Grab OHLC for SPY candlestick chart
+            if name == "SPY":
+                for col in ["Open", "High", "Low"]:
+                    s = raw[col]
+                    if isinstance(s, pd.DataFrame):
+                        s = s.iloc[:, 0]
+                    spy_ohlc[f"SPY_{col}"] = s.squeeze()
         except Exception as e:
             errors.append(f"{name} ({ticker}): {str(e)[:80]}")
 
@@ -246,6 +254,10 @@ def load_data(period: str) -> pd.DataFrame:
 
     df = pd.concat(data.values(), axis=1)
     df.columns = list(data.keys())
+
+    # SPY OHLC for candlestick chart
+    for col_name, series in spy_ohlc.items():
+        df[col_name] = series
 
     if not btc_df.empty:
         if "BTC_Volume" in btc_df.columns:
@@ -320,7 +332,12 @@ def load_fear_greed():
     return None
 
 
-df = load_data(lookback)
+# Fetch extra history for z-score warmup so the display window has full coverage.
+# E.g. if user picks "2y" and z-score window is 252d, we need ~3y of data
+# so that the visible 2y window has valid scores throughout.
+_fetch_periods = {"2y": "5y", "3y": "5y", "5y": "10y", "10y": "10y"}
+_fetch_period = _fetch_periods.get(lookback, "5y")
+df = load_data(_fetch_period)
 fng_data = load_fear_greed()
 
 if len(df) < 300:
@@ -494,6 +511,12 @@ df["Divergent"] = df["SPY_Regime"] != df["BTC_Regime"]
 df["Regime_Agreement"] = np.where(
     df["SPY_Regime"] == df["BTC_Regime"], df["SPY_Regime"], "Divergent"
 )
+
+# Trim to display window (extra history was fetched for z-score warmup)
+_display_days = {"2y": 504, "3y": 756, "5y": 1260, "10y": 2520}
+_n_display = _display_days.get(lookback, 504)
+if len(df) > _n_display:
+    df = df.iloc[-_n_display:]
 
 # Current state
 spy_regime = df["SPY_Regime"].iloc[-1]
@@ -702,10 +725,20 @@ with tab_spy:
         subplot_titles=["SPY Price", "SPY Macro Score", "SPY Factor Contributions"],
     )
 
-    fig.add_trace(go.Scatter(
-        x=df.index, y=df["SPY"], line=dict(width=2, color="#60a5fa"),
-        name="SPY", hovertemplate="%{x|%b %d %Y}<br>$%{y:.2f}<extra>SPY</extra>",
-    ), row=1, col=1)
+    # Candlestick chart for SPY price
+    if all(c in df.columns for c in ["SPY_Open", "SPY_High", "SPY_Low"]):
+        fig.add_trace(go.Candlestick(
+            x=df.index, open=df["SPY_Open"], high=df["SPY_High"],
+            low=df["SPY_Low"], close=df["SPY"],
+            increasing_line_color="#4ade80", decreasing_line_color="#f87171",
+            increasing_fillcolor="#4ade80", decreasing_fillcolor="#f87171",
+            name="SPY", whiskerwidth=0.5,
+        ), row=1, col=1)
+    else:
+        fig.add_trace(go.Scatter(
+            x=df.index, y=df["SPY"], line=dict(width=2, color="#60a5fa"),
+            name="SPY", hovertemplate="%{x|%b %d %Y}<br>$%{y:.2f}<extra>SPY</extra>",
+        ), row=1, col=1)
 
     if show_bbands:
         fig.add_trace(go.Scatter(x=df.index, y=df["SPY_BB_Upper"],
@@ -739,6 +772,7 @@ with tab_spy:
 
     add_regime_shading(fig, df, "SPY_Regime", "SPY_RegimeBlock", [1, 2, 3])
     fig.update_layout(height=900, **DARK_LAYOUT)
+    fig.update_xaxes(rangeslider_visible=False, row=1, col=1)  # hide candlestick rangeslider
     for i in range(1, 4):
         fig.update_yaxes(gridcolor="rgba(255,255,255,0.08)", row=i, col=1)
         fig.update_xaxes(tickformat="%b '%y", showgrid=True, gridcolor="rgba(255,255,255,0.08)", row=i, col=1)
