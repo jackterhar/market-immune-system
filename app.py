@@ -780,6 +780,16 @@ with tab_spy:
 
     st.plotly_chart(fig, use_container_width=True, key="spy_regime_chart")
 
+    st.markdown("""<div style="color:#9ca3af;font-size:0.85rem;line-height:1.5;margin-top:0.5rem;">
+    <b>SPY Macro Score</b> — A single composite number that captures the overall equity macro environment.
+    It's the weighted sum of four z-scored factors (trend, VIX, yield curve, vol spread), smoothed to reduce noise.
+    Above +0.4 = Risk-On, below −0.4 = Risk-Off, in between = Neutral.<br><br>
+    <b>SPY Factor Contributions</b> — Shows how much each individual factor is pulling the composite score
+    up or down at any given time. Trend (40%) measures 63-day SPY momentum. VIX (−30%) penalizes high
+    implied volatility. Yield Curve (15%) rewards a steeper 10yr−3mo spread. Vol Spread (−15%) penalizes
+    when short-term realized vol exceeds longer-term vol, signaling instability.
+    </div>""", unsafe_allow_html=True)
+
 
 # ─────────────────────────────────────────────────────
 # TAB 2: BTC REGIME
@@ -833,6 +843,17 @@ with tab_btc:
         fig2.update_xaxes(tickformat="%b '%y", showgrid=True, gridcolor="rgba(255,255,255,0.08)", row=i, col=1)
 
     st.plotly_chart(fig2, use_container_width=True, key="btc_regime_chart")
+
+    st.markdown("""<div style="color:#9ca3af;font-size:0.85rem;line-height:1.5;margin-top:0.5rem;">
+    <b>BTC Crypto Score</b> — A composite number capturing the crypto-specific macro environment.
+    It's the weighted sum of four z-scored factors (momentum, realized vol, volume ratio, MVRV proxy),
+    smoothed to reduce whipsawing. Above +0.4 = Risk-On, below −0.4 = Risk-Off, in between = Neutral.<br><br>
+    <b>BTC Factor Contributions</b> — Shows each factor's individual pull on the composite score.
+    Momentum (35%) measures 63-day BTC return. Realized Vol (−25%) penalizes high 30-day annualized
+    volatility. Volume Ratio (15%) rewards above-average daily exchange volume vs the 50-day average.
+    MVRV Proxy (25%) compares price to its 200-day moving average — readings well above 1.0 suggest
+    overvaluation, while readings below suggest undervaluation.
+    </div>""", unsafe_allow_html=True)
 
     # Fear & Greed section
     if fng_data is not None:
