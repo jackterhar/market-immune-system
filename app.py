@@ -781,57 +781,51 @@ with tab_spy:
     st.plotly_chart(fig, use_container_width=True, key="spy_regime_chart")
 
     st.markdown("---")
-    st.markdown("""<div style="color:#9ca3af;font-size:0.85rem;line-height:1.6;margin-top:0.5rem;">
-
-    <b style="color:#c9d1d9;">SPY Macro Score</b><br>
-    A single composite number summarizing the equity macro environment at any point in time. Each trading day,
-    four macro factors are individually z-scored over a rolling window (default 252 days) to normalize them
-    onto a common scale — a z-score of +1 means the factor is one standard deviation above its historical mean,
-    −1 means one below. These z-scores are then multiplied by their assigned weights and summed to produce
-    the raw composite score. Finally, the score is smoothed with a 10-day exponential moving average to filter
-    out daily noise and reduce false regime flips. The result oscillates around zero: readings above +0.4
-    classify the environment as <span style="color:#4ade80;">Risk-On</span> (macro tailwinds favor equities),
-    below −0.4 as <span style="color:#f87171;">Risk-Off</span> (macro headwinds dominate), and anything
-    in between as <span style="color:#fbbf24;">Neutral</span> (mixed signals, no strong directional bias).
-    The green and red dotted lines on the chart mark these thresholds. When the score crosses a threshold,
-    a regime transition occurs and the background shading changes accordingly.
-
-    <br><br>
-    <b style="color:#c9d1d9;">SPY Factor Contributions</b><br>
-    The bottom chart decomposes the macro score into its four weighted components so you can see <i>why</i>
-    the score is where it is and which factors are driving regime changes:
-
-    <br><br>
-    <span style="color:#60a5fa;">● Trend (40% weight)</span> — The 63-day cumulative return of SPY, z-scored.
-    This is the heaviest factor because sustained price momentum is the single strongest signal of a favorable
-    equity environment. When SPY has been rising steadily over three months, this component pushes the score
-    higher. When SPY has been declining, it drags the score down. The 63-day window captures medium-term
-    trends while filtering out short-term noise.
-
-    <br><br>
-    <span style="color:#f87171;">● VIX (−30% weight)</span> — The raw VIX level (CBOE Volatility Index), z-scored.
-    The negative weight means higher VIX readings <i>reduce</i> the composite score. The VIX measures the market's
-    expectation of 30-day forward volatility, derived from SPY option prices. Elevated VIX (typically above 20–25)
-    signals fear and uncertainty — options traders are paying more for downside protection. Extremely low VIX
-    (below 13–14) suggests complacency. As the second-heaviest factor, VIX acts as a counterbalance to trend:
-    even if SPY is rising, a spiking VIX can pull the score toward Risk-Off.
-
-    <br><br>
-    <span style="color:#34d399;">● Yield Curve (15% weight)</span> — The spread between the 10-year Treasury yield
-    (TNX) and the 3-month Treasury yield (IRX), z-scored. A positive (steepening) curve historically signals
-    economic expansion — the bond market expects growth and future rate hikes. An inverted curve (negative spread)
-    has preceded every U.S. recession since the 1960s. The positive weight means a steeper curve pushes the
-    score toward Risk-On, while an inverted or flattening curve pulls it toward Risk-Off.
-
-    <br><br>
-    <span style="color:#fbbf24;">● Vol Spread (−15% weight)</span> — The difference between 20-day and 50-day
-    rolling realized volatility of SPY, z-scored. When short-term vol exceeds longer-term vol, it signals
-    a recent spike in turbulence — the kind of instability that often precedes larger drawdowns. The negative
-    weight penalizes these spikes. Conversely, when short-term vol falls below longer-term vol, it suggests
-    the market is calming down after a volatile period, which contributes positively to the score. This factor
-    captures regime shifts that the VIX (which is forward-looking) might not yet reflect.
-
-    </div>""", unsafe_allow_html=True)
+    st.markdown(
+'<div style="color:#9ca3af;font-size:0.85rem;line-height:1.6;margin-top:0.5rem;">'
+'<b style="color:#c9d1d9;">SPY Macro Score</b><br>'
+'A single composite number summarizing the equity macro environment at any point in time. Each trading day, '
+'four macro factors are individually z-scored over a rolling window (default 252 days) to normalize them '
+'onto a common scale — a z-score of +1 means the factor is one standard deviation above its historical mean, '
+'−1 means one below. These z-scores are then multiplied by their assigned weights and summed to produce '
+'the raw composite score. Finally, the score is smoothed with a 10-day exponential moving average to filter '
+'out daily noise and reduce false regime flips. The result oscillates around zero: readings above +0.4 '
+'classify the environment as <span style="color:#4ade80;">Risk-On</span> (macro tailwinds favor equities), '
+'below −0.4 as <span style="color:#f87171;">Risk-Off</span> (macro headwinds dominate), and anything '
+'in between as <span style="color:#fbbf24;">Neutral</span> (mixed signals, no strong directional bias). '
+'The green and red dotted lines on the chart mark these thresholds. When the score crosses a threshold, '
+'a regime transition occurs and the background shading changes accordingly.'
+'<br><br>'
+'<b style="color:#c9d1d9;">SPY Factor Contributions</b><br>'
+'The bottom chart decomposes the macro score into its four weighted components so you can see <i>why</i> '
+'the score is where it is and which factors are driving regime changes:'
+'<br><br>'
+'<span style="color:#60a5fa;">● Trend (40% weight)</span> — The 63-day cumulative return of SPY, z-scored. '
+'This is the heaviest factor because sustained price momentum is the single strongest signal of a favorable '
+'equity environment. When SPY has been rising steadily over three months, this component pushes the score '
+'higher. When SPY has been declining, it drags the score down. The 63-day window captures medium-term '
+'trends while filtering out short-term noise.'
+'<br><br>'
+'<span style="color:#f87171;">● VIX (−30% weight)</span> — The raw VIX level (CBOE Volatility Index), z-scored. '
+'The negative weight means higher VIX readings <i>reduce</i> the composite score. The VIX measures the market\'s '
+'expectation of 30-day forward volatility, derived from SPY option prices. Elevated VIX (typically above 20–25) '
+'signals fear and uncertainty — options traders are paying more for downside protection. Extremely low VIX '
+'(below 13–14) suggests complacency. As the second-heaviest factor, VIX acts as a counterbalance to trend: '
+'even if SPY is rising, a spiking VIX can pull the score toward Risk-Off.'
+'<br><br>'
+'<span style="color:#34d399;">● Yield Curve (15% weight)</span> — The spread between the 10-year Treasury yield '
+'(TNX) and the 3-month Treasury yield (IRX), z-scored. A positive (steepening) curve historically signals '
+'economic expansion — the bond market expects growth and future rate hikes. An inverted curve (negative spread) '
+'has preceded every U.S. recession since the 1960s. The positive weight means a steeper curve pushes the '
+'score toward Risk-On, while an inverted or flattening curve pulls it toward Risk-Off.'
+'<br><br>'
+'<span style="color:#fbbf24;">● Vol Spread (−15% weight)</span> — The difference between 20-day and 50-day '
+'rolling realized volatility of SPY, z-scored. When short-term vol exceeds longer-term vol, it signals '
+'a recent spike in turbulence — the kind of instability that often precedes larger drawdowns. The negative '
+'weight penalizes these spikes. Conversely, when short-term vol falls below longer-term vol, it suggests '
+'the market is calming down after a volatile period, which contributes positively to the score. This factor '
+'captures regime shifts that the VIX (which is forward-looking) might not yet reflect.'
+'</div>', unsafe_allow_html=True)
 
 
 # ─────────────────────────────────────────────────────
@@ -888,61 +882,55 @@ with tab_btc:
     st.plotly_chart(fig2, use_container_width=True, key="btc_regime_chart")
 
     st.markdown("---")
-    st.markdown("""<div style="color:#9ca3af;font-size:0.85rem;line-height:1.6;margin-top:0.5rem;">
-
-    <b style="color:#c9d1d9;">BTC Crypto Score</b><br>
-    A single composite number summarizing the crypto-specific macro environment. It works identically to the
-    SPY score in construction — z-score each factor, multiply by weights, sum, then smooth with a 10-day EMA —
-    but uses completely different factors tuned to what actually drives crypto markets. BTC doesn't respond to
-    yield curves or equity-style risk premia the way SPY does. Instead, it's driven by liquidity cycles,
-    speculative momentum, on-chain activity, and volatility regimes unique to 24/7 crypto markets. The same
-    thresholds apply: above +0.4 = <span style="color:#4ade80;">Risk-On</span>, below −0.4 =
-    <span style="color:#f87171;">Risk-Off</span>, in between = <span style="color:#fbbf24;">Neutral</span>.
-    Because BTC is structurally more volatile than SPY, regime flips tend to happen faster and the score
-    swings through wider ranges.
-
-    <br><br>
-    <b style="color:#c9d1d9;">BTC Factor Contributions</b><br>
-    The bottom chart breaks the composite score into its four weighted crypto factors:
-
-    <br><br>
-    <span style="color:#fb923c;">● Momentum (35% weight)</span> — The 63-day cumulative return of BTC, z-scored.
-    This is the dominant factor because crypto markets are heavily momentum-driven — trends tend to persist
-    due to reflexive feedback loops between price, sentiment, and leverage. When BTC has been rallying over
-    three months, this component strongly pushes the score toward Risk-On. During sustained selloffs, it
-    drags the score deep into Risk-Off. The 63-day window is long enough to filter out short squeezes and
-    dead-cat bounces while still capturing the medium-term trend.
-
-    <br><br>
-    <span style="color:#f87171;">● Realized Vol (−25% weight)</span> — The 30-day annualized realized volatility
-    of BTC log returns, z-scored. The negative weight means higher realized vol <i>reduces</i> the score.
-    In crypto, volatility spikes almost always accompany drawdowns — cascading liquidations, exchange outflows,
-    and panic selling compress into violent moves. BTC's baseline vol (~50–70% annualized) is already high;
-    when 30-day realized vol surges well above that norm, it signals the kind of destabilization that typically
-    precedes further downside. Conversely, declining realized vol during an uptrend is a healthy sign — it
-    suggests orderly accumulation rather than speculative frenzy.
-
-    <br><br>
-    <span style="color:#60a5fa;">● Volume Ratio (15% weight)</span> — Daily BTC trading volume divided by the
-    50-day average volume, z-scored. This measures whether current exchange activity is unusually high or low
-    relative to recent history. Sustained above-average volume during a rally confirms genuine participation
-    and pushes the score higher. Below-average volume during a rally is a warning sign of thinning conviction.
-    Volume spikes during selloffs can be either capitulatory (bullish exhaustion) or panic-driven (bearish
-    continuation) — the z-scoring and smoothing help distinguish between these by looking at the broader
-    trend rather than individual spikes.
-
-    <br><br>
-    <span style="color:#c4b5fd;">● MVRV Proxy (25% weight)</span> — BTC price divided by its 200-day simple
-    moving average, z-scored. This approximates the Market Value to Realized Value ratio used in on-chain
-    analysis. When price is well above the 200-SMA (ratio &gt; 1.0), the average holder is in profit and
-    the market is in a "hot" state — historically associated with bull markets but also with overextension
-    risk when the ratio gets extreme. When price is below the 200-SMA (ratio &lt; 1.0), the average holder
-    is underwater — historically associated with accumulation zones and eventual bottoms. The positive weight
-    means a higher ratio pushes the score toward Risk-On, reflecting the reality that crypto trends tend to
-    continue while price is above this long-term average. The z-scoring ensures that only <i>abnormal</i>
-    deviations from the ratio's own history move the needle, not the absolute level.
-
-    </div>""", unsafe_allow_html=True)
+    st.markdown(
+'<div style="color:#9ca3af;font-size:0.85rem;line-height:1.6;margin-top:0.5rem;">'
+'<b style="color:#c9d1d9;">BTC Crypto Score</b><br>'
+'A single composite number summarizing the crypto-specific macro environment. It works identically to the '
+'SPY score in construction — z-score each factor, multiply by weights, sum, then smooth with a 10-day EMA — '
+'but uses completely different factors tuned to what actually drives crypto markets. BTC doesn\'t respond to '
+'yield curves or equity-style risk premia the way SPY does. Instead, it\'s driven by liquidity cycles, '
+'speculative momentum, on-chain activity, and volatility regimes unique to 24/7 crypto markets. The same '
+'thresholds apply: above +0.4 = <span style="color:#4ade80;">Risk-On</span>, below −0.4 = '
+'<span style="color:#f87171;">Risk-Off</span>, in between = <span style="color:#fbbf24;">Neutral</span>. '
+'Because BTC is structurally more volatile than SPY, regime flips tend to happen faster and the score '
+'swings through wider ranges.'
+'<br><br>'
+'<b style="color:#c9d1d9;">BTC Factor Contributions</b><br>'
+'The bottom chart breaks the composite score into its four weighted crypto factors:'
+'<br><br>'
+'<span style="color:#fb923c;">● Momentum (35% weight)</span> — The 63-day cumulative return of BTC, z-scored. '
+'This is the dominant factor because crypto markets are heavily momentum-driven — trends tend to persist '
+'due to reflexive feedback loops between price, sentiment, and leverage. When BTC has been rallying over '
+'three months, this component strongly pushes the score toward Risk-On. During sustained selloffs, it '
+'drags the score deep into Risk-Off. The 63-day window is long enough to filter out short squeezes and '
+'dead-cat bounces while still capturing the medium-term trend.'
+'<br><br>'
+'<span style="color:#f87171;">● Realized Vol (−25% weight)</span> — The 30-day annualized realized volatility '
+'of BTC log returns, z-scored. The negative weight means higher realized vol <i>reduces</i> the score. '
+'In crypto, volatility spikes almost always accompany drawdowns — cascading liquidations, exchange outflows, '
+'and panic selling compress into violent moves. BTC\'s baseline vol (~50–70% annualized) is already high; '
+'when 30-day realized vol surges well above that norm, it signals the kind of destabilization that typically '
+'precedes further downside. Conversely, declining realized vol during an uptrend is a healthy sign — it '
+'suggests orderly accumulation rather than speculative frenzy.'
+'<br><br>'
+'<span style="color:#60a5fa;">● Volume Ratio (15% weight)</span> — Daily BTC trading volume divided by the '
+'50-day average volume, z-scored. This measures whether current exchange activity is unusually high or low '
+'relative to recent history. Sustained above-average volume during a rally confirms genuine participation '
+'and pushes the score higher. Below-average volume during a rally is a warning sign of thinning conviction. '
+'Volume spikes during selloffs can be either capitulatory (bullish exhaustion) or panic-driven (bearish '
+'continuation) — the z-scoring and smoothing help distinguish between these by looking at the broader '
+'trend rather than individual spikes.'
+'<br><br>'
+'<span style="color:#c4b5fd;">● MVRV Proxy (25% weight)</span> — BTC price divided by its 200-day simple '
+'moving average, z-scored. This approximates the Market Value to Realized Value ratio used in on-chain '
+'analysis. When price is well above the 200-SMA (ratio &gt; 1.0), the average holder is in profit and '
+'the market is in a "hot" state — historically associated with bull markets but also with overextension '
+'risk when the ratio gets extreme. When price is below the 200-SMA (ratio &lt; 1.0), the average holder '
+'is underwater — historically associated with accumulation zones and eventual bottoms. The positive weight '
+'means a higher ratio pushes the score toward Risk-On, reflecting the reality that crypto trends tend to '
+'continue while price is above this long-term average. The z-scoring ensures that only <i>abnormal</i> '
+'deviations from the ratio\'s own history move the needle, not the absolute level.'
+'</div>', unsafe_allow_html=True)
 
     # Fear & Greed section
     if fng_data is not None:
