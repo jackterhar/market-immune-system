@@ -154,3 +154,147 @@ def fetch_parcels(
         cache.write(entry, normalized, dataset_id=dataset_id, roll_year=roll_year)
 
     return enriched, report, result
+
+
+def _numeric_where(
+    resolved: dict[str, str],
+    use_column: str,
+    roll_year: int,
+    lookback_years: int,
+    min_units: int,
+) -> str | None:
+    """SoQL filtering multifamily server-side, or None if columns are missing."""
+    units_column = resolved.get("units")
+    year_column = resolved.get("year_built")
+    if not units_column or not year_column:
+        return None
+    return (
+        f"{use_column} = 'Residential' "
+        f"AND {units_column} >= {min_units} "
+        f"AND {year_column} >= {roll_year - lookback_years}"
+    )
+
+
+def fetch_new_multifamily(
+    roll_year: int | None = None,
+    lookback_years: int | None = None,
+    min_units: int | None = None,
+    max_rows: int | None = None,
+    use_cache: bool = True,
+    progress: Callable[[int, str], None] | None = None,
+) -> tuple[pd.DataFrame, socrata.SourceResult]:
+    """
+    Pull recently built multifamily parcels, countywide.
+
+    Deliberately a separate, narrow query rather than part of the main load.
+    Residential is ~1.8M of the county's 2.4M parcels; filtering to five-plus
+    units built in the last few years cuts that to tens of thousands, which
+    moves in seconds instead of minutes.
+
+    Socrata columns are sometimes typed as text, in which case a numeric
+    comparison is rejected. When that happens the query falls back to a
+    use-type filter with a row cap and the numeric narrowing happens locally.
+    Which path ran is reported in the result notes.
+    """
+    from cre import rooftops
+
+    year = roll_year or config.CURRENT_ROLL_YEAR_FALLBACK
+    lookback = lookback_years or config.NEW_MF_LOOKBACK_YEARS
+    units_floor = min_units or config.MIN_MF_UNITS
+    cap = max_rows or config.NEW_MF_MAX_ROWS
+
+    entry = cache.entry(
+        "new_multifamily", year=year, lookback=lookback, units=units_floor, cap=cap
+    )
+    if use_cache:
+        cached = cache.read(entry)
+        if cached is not None:
+            enriched = transform.add_derived_metrics(cached, roll_year=year)
+            return enriched, socrata.SourceResult(
+                frame=cached,
+                row_count=len(cached),
+                dataset_id=entry.meta().get("dataset_id"),
+                domain=config.LA_COUNTY_DOMAIN,
+                notes=[f"Served from cache ({entry.age_hours():.0f}h old)."],
+            )
+
+    dataset_id, discovery_log = socrata.discover_dataset_id(config.ASSESSOR_PARCELS)
+    if dataset_id is None:
+        return pd.DataFrame(), socrata.SourceResult(
+            frame=pd.DataFrame(),
+            domain=config.LA_COUNTY_DOMAIN,
+            notes=discovery_log,
+            errors=["Could not resolve the assessor dataset for multifamily."],
+        )
+
+    try:
+        columns = socrata.probe_schema(config.LA_COUNTY_DOMAIN, dataset_id)
+    except socrata.SocrataError as exc:
+        return pd.DataFrame(), socrata.SourceResult(
+            frame=pd.DataFrame(),
+            dataset_id=dataset_id,
+            domain=config.LA_COUNTY_DOMAIN,
+            errors=[f"Schema probe failed: {exc}"],
+        )
+
+    resolved = resolve_probe_columns(columns)
+    use_column = resolved.get("general_use")
+    if use_column is None:
+        return pd.DataFrame(), socrata.SourceResult(
+            frame=pd.DataFrame(),
+            dataset_id=dataset_id,
+            domain=config.LA_COUNTY_DOMAIN,
+            errors=["No use-type column matched; multifamily cannot be isolated."],
+        )
+
+    result: socrata.SourceResult | None = None
+    where = _numeric_where(resolved, use_column, year, lookback, units_floor)
+
+    if where is not None:
+        result = socrata.fetch(
+            config.ASSESSOR_PARCELS,
+            where=where,
+            max_rows=cap,
+            dataset_id=dataset_id,
+            progress=progress,
+        )
+        if result.errors and result.frame.empty:
+            result.notes.append(
+                "Server-side numeric filter was rejected — the unit or year "
+                "column is stored as text. Retrying with a broader query."
+            )
+            where = None
+
+    if where is None:
+        result = socrata.fetch(
+            config.ASSESSOR_PARCELS,
+            where=f"{use_column} = 'Residential'",
+            max_rows=cap,
+            dataset_id=dataset_id,
+            progress=progress,
+        )
+        result.notes.append(
+            f"Filtered locally to {units_floor}+ units built since "
+            f"{year - lookback}. A row cap was applied, so coverage may be "
+            "partial in the largest cities."
+        )
+
+    assert result is not None
+    result.notes = discovery_log + result.notes
+    if result.frame.empty:
+        return pd.DataFrame(), result
+
+    normalized, _ = transform.normalize(result.frame)
+    enriched = transform.add_derived_metrics(normalized, roll_year=year)
+
+    mask = rooftops.is_new_multifamily(
+        enriched, roll_year=year, lookback_years=lookback, min_units=units_floor
+    )
+    enriched = enriched[mask]
+    result.row_count = len(enriched)
+    result.notes.append(f"{len(enriched):,} new multifamily parcels retained.")
+
+    if use_cache and not enriched.empty:
+        cache.write(entry, normalized[mask], dataset_id=dataset_id, roll_year=year)
+
+    return enriched, result

@@ -103,6 +103,33 @@ data — and assessed value is not market value, which is precisely why the
 long-held centers at the top carry assessments far below what they would trade
 for.
 
+### Rooftop growth
+
+Measures where new multifamily is landing, by ZIP, and joins the answer back
+onto every commercial parcel. Retail follows rooftops: a tired center on a
+corridor absorbing several hundred apartments has an incoming customer base its
+current owner is not serving, and the same center where nothing is being built
+does not. The rehab tab gains a "minimum new apartment units in the area"
+filter from this.
+
+Two sources with different reliability, deliberately never summed:
+
+- **Delivered** units come from the assessor roll — a residential parcel with
+  five or more units and a recent *year built*. Countywide. Year built rather
+  than effective year on purpose: a renovation advances the effective year
+  without adding a single rooftop.
+- **Permitted** units come from City of LA permits, and are softer. A permit
+  may lapse, get amended, or never break ground. City limits only, and it
+  depends on permit fields this project could not verify offline — when they
+  do not resolve, delivered figures stand alone and the tab says so.
+
+New multifamily is fetched with its own narrow query rather than as part of the
+main load. Residential is roughly 1.8M of the county's 2.4M parcels; filtering
+to five-plus units built recently cuts that to tens of thousands. Where Socrata
+stores the unit or year column as text and rejects a numeric comparison, the
+query falls back to a use-type filter with a row cap and narrows locally —
+which path ran is reported in Diagnostics.
+
 ## Purchase price, and why it is not assessed value
 
 The sidebar filters on **estimated market value**, not the assessor's number.
@@ -206,6 +233,7 @@ cre/
   pipeline.py           Orchestration
   cache.py              Parquet cache with TTL
   valuation.py          Market value estimation from recent transfers
+  rooftops.py           New multifamily by area, joined onto commercial parcels
   demo.py               Synthetic data for the no-network demo mode
   sources/
     socrata.py          SODA client with ID discovery and health reporting
@@ -214,7 +242,7 @@ cre/
     zoning.py           ArcGIS zoning + TOC, local shapely spatial join
     mls.py              RESO Web API adapter
 scripts/probe_sources.py  Connectivity and schema diagnostics
-tests/                    120 tests, no network required
+tests/                    134 tests, no network required
 ```
 
 ## Tests

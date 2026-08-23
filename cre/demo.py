@@ -39,6 +39,21 @@ USES = [
 ZONES = ["C2-1VL", "C2-1", "C4-2", "C1.5-1", "M1-1", "M2-2", "[Q]C2-1", "C4-3"]
 
 
+def _zip_pools() -> dict[str, list[str]]:
+    """
+    A small pool of ZIPs per city, as real ones have.
+
+    Random ZIPs per parcel would leave every peer group below the size floor,
+    collapsing peer medians to a single global value. Shared between the
+    commercial and multifamily generators so area joins have something to
+    match on.
+    """
+    return {
+        city: [f"9{1000 + 37 * index + offset}" for offset in range(4)]
+        for index, city in enumerate(CITIES)
+    }
+
+
 def _city_weights(count: int) -> np.ndarray:
     """Weight the parcel mix toward Los Angeles, as the real county roll is."""
     weights = np.full(count, 1.0)
@@ -92,13 +107,7 @@ def generate(n: int = 4000, seed: int = 11) -> pd.DataFrame:
     improvement_value = np.round(building_sqft * rng.uniform(60, 320, n) * age_factor)
     improvement_value[vacant] = 0
 
-    # Each city carries a small pool of ZIPs, as real ones do. Random ZIPs per
-    # parcel would leave every peer group below the size floor, collapsing the
-    # location index to a single global median.
-    zip_pools = {
-        city: [f"9{1000 + 37 * index + offset}" for offset in range(4)]
-        for index, city in enumerate(city_names)
-    }
+    zip_pools = _zip_pools()
     zips = np.array([rng.choice(zip_pools[city]) for city in cities])
 
     frame = pd.DataFrame(
@@ -140,4 +149,64 @@ def generate(n: int = 4000, seed: int = 11) -> pd.DataFrame:
     frame.loc[outside, "zone"] = pd.NA
     frame.loc[outside, "toc_tier"] = np.nan
 
+    return transform.add_derived_metrics(frame, roll_year=2025)
+
+
+def generate_multifamily(n: int = 600, seed: int = 23) -> pd.DataFrame:
+    """
+    Synthetic recently built multifamily, for the rooftop growth tab.
+
+    Deliberately uneven across areas: real development clusters hard, and a
+    uniform sprinkle would make every ZIP look identical and the whole lens
+    pointless.
+    """
+    rng = np.random.default_rng(seed)
+    city_names = list(CITIES)
+    zip_pools = _zip_pools()
+
+    # A few ZIPs absorb most of the development; the rest see little.
+    all_zips = [z for city in city_names for z in zip_pools[city]]
+    intensity = rng.pareto(1.1, len(all_zips)) + 0.2
+    intensity = intensity / intensity.sum()
+    chosen_zips = rng.choice(all_zips, size=n, p=intensity)
+
+    zip_to_city = {z: city for city in city_names for z in zip_pools[city]}
+    cities = np.array([zip_to_city[z] for z in chosen_zips])
+
+    lat = np.array([CITIES[c][0] for c in cities]) + rng.normal(0, 0.03, n)
+    lon = np.array([CITIES[c][1] for c in cities]) + rng.normal(0, 0.04, n)
+
+    units = np.round(rng.lognormal(3.1, 0.9, n)).clip(5, 400)
+    year_built = rng.integers(2018, 2026, n).astype(float)
+
+    frame = pd.DataFrame(
+        {
+            "parcel_id": [f"{6000000000 + i}" for i in range(n)],
+            "situs_address": [
+                f"{rng.integers(100, 9999)} {name} {suffix}"
+                for name, suffix in zip(
+                    rng.choice(["MAIN", "OAK", "SPRING", "VERMONT", "PICO"], n),
+                    rng.choice(["ST", "AVE", "BLVD"], n),
+                )
+            ],
+            "situs_city": cities,
+            "situs_zip": chosen_zips,
+            "general_use": ["Residential"] * n,
+            "specific_use": rng.choice(
+                ["Five or more apartments", "Condominium"], n, p=[0.75, 0.25]
+            ),
+            "units": units,
+            "year_built": year_built,
+            "effective_year": year_built,
+            "building_sqft": units * rng.uniform(700, 1100, n),
+            "lot_sqft": units * rng.uniform(400, 1200, n),
+            "land_value": units * rng.uniform(40_000, 160_000, n),
+            "improvement_value": units * rng.uniform(120_000, 380_000, n),
+            "land_base_year": year_built,
+            "imp_base_year": year_built,
+            "lat": lat,
+            "lon": lon,
+        }
+    )
+    frame["total_value"] = frame["land_value"] + frame["improvement_value"]
     return transform.add_derived_metrics(frame, roll_year=2025)

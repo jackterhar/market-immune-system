@@ -30,7 +30,7 @@ def test_app_runs_without_exception(app: AppTest):
 
 
 def test_app_renders_all_tabs(app: AppTest):
-    assert len(app.tabs) == 6
+    assert len(app.tabs) == 7
 
 
 def test_app_reports_no_errors(app: AppTest):

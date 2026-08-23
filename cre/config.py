@@ -271,6 +271,26 @@ MIN_PEER_GROUP_SIZE = 8
 
 CURRENT_ROLL_YEAR_FALLBACK = 2025
 
+# ── Rooftop growth ───────────────────────────────────────────────────────
+# New multifamily is a demand signal for retail: rooftops arrive before the
+# tenants who serve them. Measured at area level, not parcel level.
+
+# How far back to count a delivery as "new".
+NEW_MF_LOOKBACK_YEARS = 8
+
+# Units at or above which a residential parcel counts as multifamily rather
+# than a duplex or a house with a granny flat.
+MIN_MF_UNITS = 5
+
+# Areas are ZIP codes, falling back to city where ZIP is unavailable. ZIP is
+# the smallest geography the assessor roll carries consistently, and it is
+# roughly the catchment of a neighborhood shopping center.
+AREA_KEYS = ["situs_zip", "situs_city"]
+
+# Cap on the targeted multifamily pull. Countywide new multifamily is tens of
+# thousands of parcels, not millions, so this is generous.
+NEW_MF_MAX_ROWS = 150_000
+
 # ── MLS (RESO Web API) ───────────────────────────────────────────────────
 # Credentials never live in this file. See cre/sources/mls.py.
 MLS_PROPERTY_TYPES = [
