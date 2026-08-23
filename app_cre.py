@@ -28,7 +28,7 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from cre import cache, config, demo, pipeline, scoring  # noqa: E402
+from cre import cache, config, demo, pipeline, scoring, valuation  # noqa: E402
 from cre.sources import mls  # noqa: E402
 
 st.set_page_config(
@@ -174,6 +174,7 @@ def load_data(settings: dict) -> pipeline.PipelineResult:
     """Run the pipeline, streaming progress into the sidebar."""
     if settings["demo"]:
         parcels = demo.generate(settings["demo_rows"])
+        parcels, valuation_result = valuation.attach(parcels)
         result = pipeline.PipelineResult(parcels=parcels)
         result.acquisition = scoring.acquisition_score(parcels)
         result.development = scoring.development_score(parcels)
@@ -185,7 +186,11 @@ def load_data(settings: dict) -> pipeline.PipelineResult:
         parcels["unused_buildable_sqft"] = (
             (max_far - parcels["built_far"].fillna(0)) * parcels["lot_sqft"]
         ).clip(lower=0)
-        result.notes = ["Demo data — synthetic parcels, not real records."] + notes
+        result.notes = (
+            ["Demo data — synthetic parcels, not real records."]
+            + valuation_result.notes
+            + notes
+        )
         return result
 
     use_types = pipeline.build_use_types(
@@ -227,9 +232,70 @@ def load_data(settings: dict) -> pipeline.PipelineResult:
 # ── Sidebar: filters ─────────────────────────────────────────────────────
 
 
+DEFAULT_PRICE_RANGE = (1_000_000.0, 4_000_000.0)
+
+
+def price_filter(parcels: pd.DataFrame) -> pd.Series:
+    """
+    Budget filter on *estimated* purchase price, not assessed value.
+
+    Assessed value would be the wrong basis: Prop 13 freezes it at the base
+    year, so filtering on it selects on how long someone has owned a property
+    rather than on what it costs. The estimate is built from parcels that
+    changed hands recently, whose assessments are their actual sale prices.
+    """
+    if "estimated_value" not in parcels.columns:
+        return pd.Series(True, index=parcels.index)
+
+    values = pd.to_numeric(parcels["estimated_value"], errors="coerce")
+    if values.notna().sum() == 0:
+        st.sidebar.caption(
+            "No market value estimates available — too few recent transfers in "
+            "this parcel set to build price benchmarks."
+        )
+        return pd.Series(True, index=parcels.index)
+
+    ceiling = float(min(values.quantile(0.995), 50_000_000))
+    ceiling = max(ceiling, DEFAULT_PRICE_RANGE[1])
+    default = (
+        min(DEFAULT_PRICE_RANGE[0], ceiling),
+        min(DEFAULT_PRICE_RANGE[1], ceiling),
+    )
+
+    low, high = st.sidebar.slider(
+        "Purchase price ($M)",
+        0.0,
+        ceiling / 1e6,
+        (default[0] / 1e6, default[1] / 1e6),
+        step=0.25,
+        format="$%.2fM",
+        help=(
+            "Estimated from parcels that changed hands in the last five years, "
+            "whose assessments equal their sale price under Prop 13. This is "
+            "NOT assessed value — long-held parcels are assessed at a fraction "
+            "of what they would trade for."
+        ),
+    )
+    in_range = values.between(low * 1e6, high * 1e6)
+
+    keep_unpriced = st.sidebar.checkbox(
+        "Include parcels without an estimate",
+        value=False,
+        help="Parcels with too few nearby transfers to price. They cannot be budget-checked.",
+    )
+    if keep_unpriced:
+        in_range |= values.isna()
+
+    priced = int(in_range.sum())
+    st.sidebar.caption(f"{priced:,} parcels in budget.")
+    return in_range
+
+
 def sidebar_filters(parcels: pd.DataFrame) -> pd.DataFrame:
     st.sidebar.header("Filters")
     mask = pd.Series(True, index=parcels.index)
+
+    mask &= price_filter(parcels)
 
     if "situs_city" in parcels.columns:
         cities = sorted(parcels["situs_city"].dropna().unique().tolist())
@@ -334,6 +400,14 @@ def score_table(
             "far_headroom": st.column_config.NumberColumn("Headroom", format="%.0%%"),
             "unused_buildable_sqft": st.column_config.NumberColumn(
                 "Unused sqft", format="%,d"
+            ),
+            "estimated_value": st.column_config.NumberColumn(
+                "Est. price",
+                format="$%,d",
+                help="Estimated market value from recent nearby transfers. Not assessed value.",
+            ),
+            "value_comp_count": st.column_config.NumberColumn(
+                "Comps", format="%d", help="Transfers behind the estimate. Fewer means less reliable."
             ),
             "total_value": st.column_config.NumberColumn("Assessed", format="$%,d"),
             "value_per_sqft": st.column_config.NumberColumn("$/sqft", format="$%.0f"),
@@ -463,6 +537,14 @@ def rehab_table(frame: pd.DataFrame) -> None:
                 help="Assessed value of the structure per square foot. Low means a worn-out building.",
             ),
             "tenure_years": st.column_config.NumberColumn("Tenure (yr)", format="%.0f"),
+            "estimated_value": st.column_config.NumberColumn(
+                "Est. price",
+                format="$%,d",
+                help="Estimated market value from recent nearby transfers. Not assessed value.",
+            ),
+            "value_comp_count": st.column_config.NumberColumn(
+                "Comps", format="%d", help="Transfers behind the estimate. Fewer means less reliable."
+            ),
             "total_value": st.column_config.NumberColumn("Assessed", format="$%,d"),
             "never_renovated": st.column_config.CheckboxColumn("Never reno"),
             "excess_parking": st.column_config.CheckboxColumn("Excess parking"),
@@ -595,6 +677,18 @@ def render_rehab(frame: pd.DataFrame) -> None:
             f"{total_sqft:,.0f} sqft × ${cost_per_sqft}/sqft. Arithmetic on your "
             "input, nothing more."
         )
+        if "estimated_value" in subset.columns:
+            median_price = pd.to_numeric(
+                subset["estimated_value"], errors="coerce"
+            ).median()
+            median_building = pd.to_numeric(
+                subset["building_sqft"], errors="coerce"
+            ).median()
+            if pd.notna(median_price) and pd.notna(median_building):
+                st.caption(
+                    f"Median center: {money(median_price)} estimated price plus "
+                    f"{money(median_building * cost_per_sqft)} of work."
+                )
 
     st.warning(
         "**No returns are projected here, deliberately.** Doing that needs in-place "
@@ -632,8 +726,12 @@ def render_detail(frame: pd.DataFrame, result: pipeline.PipelineResult) -> None:
     columns = st.columns(4)
     columns[0].metric("Acquisition", f"{row.get('acquisition_score', float('nan')):.0f}")
     columns[1].metric("Development", f"{row.get('development_score', float('nan')):.0f}")
-    columns[2].metric("Assessed value", money(row.get("total_value")))
-    columns[3].metric("Lot", number(row.get("lot_sqft"), " sqft"))
+    columns[2].metric(
+        "Est. price",
+        money(row.get("estimated_value")),
+        help=f"From {int(row.get('value_comp_count') or 0)} recent nearby transfers.",
+    )
+    columns[3].metric("Assessed", money(row.get("total_value")))
 
     left, right = st.columns(2)
 

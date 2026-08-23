@@ -13,6 +13,7 @@ from typing import Any, Callable
 import pandas as pd
 
 from cre import config, scoring, transform
+from cre import valuation
 from cre.sources import assessor, mls, permits, zoning
 from cre.sources.socrata import SourceResult
 
@@ -129,6 +130,15 @@ def run(
         if not listings.empty:
             result.parcels = mls.attach(result.parcels, listings)
 
+    report("Estimating market value")
+    result.parcels, valuation_result = valuation.attach(result.parcels)
+    result.notes.extend(valuation_result.notes)
+    if valuation_result.coverage < 1.0:
+        result.notes.append(
+            f"Market value estimated for {valuation_result.coverage:.0%} of parcels; "
+            "the rest lack the size or comp coverage to support one."
+        )
+
     report("Scoring")
     result.acquisition = scoring.acquisition_score(result.parcels)
     result.development = scoring.development_score(result.parcels)
@@ -202,6 +212,8 @@ REHAB_DISPLAY_COLUMNS = [
     "years_since_improvement",
     "improvement_per_sqft",
     "tenure_years",
+    "estimated_value",
+    "value_comp_count",
     "total_value",
     "never_renovated",
     "excess_parking",
@@ -231,6 +243,8 @@ DISPLAY_COLUMNS = [
     "assumed_max_far",
     "far_headroom",
     "unused_buildable_sqft",
+    "estimated_value",
+    "value_comp_count",
     "total_value",
     "value_per_sqft",
     "improvement_ratio",

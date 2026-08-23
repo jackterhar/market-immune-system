@@ -928,3 +928,183 @@ def test_rehab_uses_every_component_on_demo_data():
         "under_management",
         "rehab_scale",
     }
+
+
+# ── Market value estimation ──────────────────────────────────────────────
+
+from cre import valuation  # noqa: E402
+
+
+def _market_frame(n_recent: int = 40, n_held: int = 20) -> pd.DataFrame:
+    """
+    Recent transfers assessed at their true price, plus long-held parcels
+    assessed at a fraction of it — the Prop 13 pattern the estimator exists
+    to correct for.
+    """
+    true_psf = 300.0
+    rows = []
+    for i in range(n_recent):
+        sqft = 10_000.0 + i * 100
+        rows.append(
+            {
+                "parcel_id": f"R{i:04d}",
+                "situs_city": "LOS ANGELES",
+                "specific_use": "Store",
+                "building_sqft": sqft,
+                "lot_sqft": sqft * 4,
+                "total_value": sqft * true_psf,
+                "land_base_year": 2023.0,
+                "imp_base_year": 2023.0,
+            }
+        )
+    for i in range(n_held):
+        sqft = 10_000.0 + i * 100
+        rows.append(
+            {
+                "parcel_id": f"H{i:04d}",
+                "situs_city": "LOS ANGELES",
+                "specific_use": "Store",
+                "building_sqft": sqft,
+                "lot_sqft": sqft * 4,
+                # Held since 1978, assessed at a quarter of market.
+                "total_value": sqft * true_psf * 0.25,
+                "land_base_year": 1978.0,
+                "imp_base_year": 1978.0,
+            }
+        )
+    return transform.add_derived_metrics(pd.DataFrame(rows), roll_year=2025)
+
+
+def test_recent_transfer_mask_uses_land_base_year():
+    """
+    A sale reassesses land; construction reassesses only improvements. Using
+    the improvement year would mistake a renovation for a purchase.
+    """
+    frame = pd.DataFrame(
+        {
+            "land_base_year": [2023.0, 1975.0],
+            "imp_base_year": [2023.0, 2022.0],  # second is new construction
+        }
+    )
+    mask = valuation.recent_transfer_mask(frame, roll_year=2025, lookback_years=5)
+    assert bool(mask.iloc[0]) is True
+    assert bool(mask.iloc[1]) is False
+
+
+def test_recent_transfer_mask_excludes_future_base_years():
+    frame = pd.DataFrame({"land_base_year": [2099.0]})
+    assert not valuation.recent_transfer_mask(frame, roll_year=2025).iloc[0]
+
+
+def test_estimate_reproduces_price_for_recently_traded_parcels():
+    """The core sanity check: a recent transfer's assessment IS its price."""
+    frame = _market_frame()
+    result = valuation.estimate_market_value(frame, roll_year=2025)
+    recent = frame["land_base_year"] == 2023.0
+    ratio = result.estimate[recent] / frame.loc[recent, "total_value"]
+    assert ratio.median() == pytest.approx(1.0, abs=0.05)
+
+
+def test_estimate_exceeds_assessed_value_for_long_held_parcels():
+    """The Prop 13 correction: long holds are assessed well below market."""
+    frame = _market_frame()
+    result = valuation.estimate_market_value(frame, roll_year=2025)
+    held = frame["land_base_year"] == 1978.0
+    ratio = result.estimate[held] / frame.loc[held, "total_value"]
+    assert ratio.median() == pytest.approx(4.0, rel=0.15)
+
+
+def test_estimate_returns_nothing_when_comps_are_too_few():
+    frame = pd.DataFrame(
+        {
+            "parcel_id": ["a", "b"],
+            "situs_city": ["LOS ANGELES"] * 2,
+            "specific_use": ["Store"] * 2,
+            "building_sqft": [10_000.0, 12_000.0],
+            "lot_sqft": [40_000.0, 48_000.0],
+            "total_value": [3_000_000.0, 3_600_000.0],
+            "land_base_year": [1975.0, 1980.0],
+        }
+    )
+    result = valuation.estimate_market_value(frame, roll_year=2025)
+    assert result.estimate.isna().all()
+    assert result.coverage == 0.0
+    assert any("too few" in note for note in result.notes)
+
+
+def test_estimate_discards_implausible_price_per_foot():
+    """A data error must not poison the benchmark median."""
+    frame = _market_frame()
+    frame.loc[0, "total_value"] = 1e12  # absurd
+    result = valuation.estimate_market_value(frame, roll_year=2025)
+    recent = frame["land_base_year"] == 2023.0
+    ratio = (result.estimate[recent] / (frame.loc[recent, "building_sqft"] * 300.0))
+    assert ratio.median() == pytest.approx(1.0, abs=0.1)
+
+
+def test_estimate_uses_lot_basis_for_land_dominant_parcels():
+    frame = _market_frame()
+    vacant = pd.DataFrame(
+        [
+            {
+                "parcel_id": "V0001",
+                "situs_city": "LOS ANGELES",
+                "specific_use": "Store",
+                "building_sqft": np.nan,
+                "lot_sqft": 40_000.0,
+                "total_value": np.nan,
+                "land_base_year": 1990.0,
+                "imp_base_year": 1990.0,
+            }
+        ]
+    )
+    combined = transform.add_derived_metrics(
+        pd.concat([frame, vacant], ignore_index=True), roll_year=2025
+    )
+    result = valuation.estimate_market_value(combined, roll_year=2025)
+    assert result.basis.iloc[-1] == "lot sqft"
+    assert result.estimate.iloc[-1] > 0
+
+
+def test_estimate_reports_comp_counts():
+    result = valuation.estimate_market_value(_market_frame(), roll_year=2025)
+    assert (result.comp_count[result.estimate.notna()] > 0).all()
+
+
+def test_attach_adds_columns_and_ratio():
+    out, result = valuation.attach(_market_frame(), roll_year=2025)
+    for column in ("estimated_value", "value_comp_count", "value_basis",
+                   "assessed_to_estimate_ratio"):
+        assert column in out.columns
+    held = out["land_base_year"] == 1978.0
+    assert out.loc[held, "assessed_to_estimate_ratio"].median() > 2.0
+
+
+def test_attach_without_assessed_value_degrades_cleanly():
+    frame = pd.DataFrame({"parcel_id": ["a"], "situs_city": ["LA"]})
+    out, result = valuation.attach(frame)
+    assert out["estimated_value"].isna().all()
+    assert result.notes
+
+
+def test_valuation_never_produces_infinities():
+    frame = _market_frame()
+    frame.loc[0, "building_sqft"] = 0.0
+    frame.loc[1, "lot_sqft"] = 0.0
+    out, _ = valuation.attach(frame, roll_year=2025)
+    assert not np.isinf(out["estimated_value"].astype(float).fillna(0)).any()
+
+
+def test_budget_filter_on_estimate_differs_from_assessed():
+    """
+    The whole reason this module exists: the two bases select different
+    parcels, so filtering on assessed value would return the wrong list.
+    """
+    out, _ = valuation.attach(_market_frame(), roll_year=2025)
+    by_assessed = set(
+        out.index[out["total_value"].between(1e6, 4e6)]
+    )
+    by_estimate = set(
+        out.index[out["estimated_value"].between(1e6, 4e6)]
+    )
+    assert by_assessed != by_estimate

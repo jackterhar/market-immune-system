@@ -103,6 +103,46 @@ data — and assessed value is not market value, which is precisely why the
 long-held centers at the top carry assessments far below what they would trade
 for.
 
+## Purchase price, and why it is not assessed value
+
+The sidebar filters on **estimated market value**, not the assessor's number.
+That distinction is the difference between a useful budget filter and a
+misleading one.
+
+Proposition 13 freezes a parcel's assessment at its base year and caps growth
+at 2% a year. A center held since 1975 is assessed at a fraction of what it
+would sell for, so filtering a budget against assessed value selects mostly on
+*how long someone has owned a property* rather than on what it costs. On the
+demo set the gap is stark:
+
+| Ownership tenure | Median assessed | Median estimated | Ratio |
+|---|---|---|---|
+| 0–10 yr | $2.41M | $2.33M | 1.02 |
+| 25–40 yr | $1.22M | $2.44M | 1.95 |
+| 40–60 yr | $0.70M | $2.44M | 3.29 |
+
+Prop 13 also supplies the fix. A change of ownership resets the assessment to
+the purchase price, so **parcels with a recent base year are a record of recent
+sale prices**. Those become the comp set: pooled by city and use type, they
+give a price per square foot that is applied to parcels which have not traded.
+Improved property is priced on building area, land-dominant parcels on lot
+area, and the basis is reported per parcel.
+
+One refinement matters. A sale reassesses the whole parcel; new construction
+reassesses only the improvement. So the comp set is drawn on the *land* base
+year — an improvement year moving on its own usually means a renovation, not a
+purchase.
+
+The recently-traded parcels are also the sanity check: their estimate comes
+back within a few percent of their own assessment, because for them the
+assessment really is the price.
+
+**Limits.** Comps are carried at their transfer-year price and are not marked
+to today's market, so a fast-moving submarket will read low. Every estimate
+travels with the number of comps behind it — a low count means a wide error
+bar. Parcels with too few nearby transfers get no estimate at all rather than
+a fabricated one, and are excluded from budget filtering by default.
+
 ## Data sources and coverage
 
 | Source | Coverage | Auth | Provides |
@@ -165,6 +205,7 @@ cre/
   scoring.py            Acquisition and development scoring, zone parsing
   pipeline.py           Orchestration
   cache.py              Parquet cache with TTL
+  valuation.py          Market value estimation from recent transfers
   demo.py               Synthetic data for the no-network demo mode
   sources/
     socrata.py          SODA client with ID discovery and health reporting
@@ -173,7 +214,7 @@ cre/
     zoning.py           ArcGIS zoning + TOC, local shapely spatial join
     mls.py              RESO Web API adapter
 scripts/probe_sources.py  Connectivity and schema diagnostics
-tests/                    108 tests, no network required
+tests/                    120 tests, no network required
 ```
 
 ## Tests
