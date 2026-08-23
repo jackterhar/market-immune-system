@@ -1,0 +1,12 @@
+# Committed: the dashboards are designed dark. Setting the base theme rather
+# than only painting .stApp in CSS keeps the sidebar, widgets and text colours
+# consistent — otherwise Streamlit renders light-mode text on a dark canvas.
+[theme]
+base = "dark"
+primaryColor = "#4fd1c5"
+backgroundColor = "#0e1117"
+secondaryBackgroundColor = "#1a1f2b"
+textColor = "#e6e9ef"
+
+[browser]
+gatherUsageStats = false
