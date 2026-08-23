@@ -12,7 +12,7 @@ from typing import Any, Callable
 
 import pandas as pd
 
-from cre import config, scoring, transform
+from cre import config, rooftops as rooftops_module, scoring, transform
 from cre import valuation
 from cre.sources import assessor, mls, permits, zoning
 from cre.sources.socrata import SourceResult
@@ -27,6 +27,8 @@ class PipelineResult:
     sources: dict[str, SourceResult] = field(default_factory=dict)
     acquisition: scoring.ScoreResult | None = None
     development: scoring.ScoreResult | None = None
+    rooftops: rooftops_module.RooftopResult | None = None
+    multifamily: pd.DataFrame = field(default_factory=pd.DataFrame)
     notes: list[str] = field(default_factory=list)
 
     @property
@@ -72,6 +74,7 @@ def run(
     with_permits: bool = True,
     with_zoning: bool = True,
     with_mls: bool = False,
+    with_rooftops: bool = True,
     use_cache: bool = True,
     progress: Callable[[str, int], None] | None = None,
 ) -> PipelineResult:
@@ -129,6 +132,28 @@ def run(
         result.sources["mls"] = mls_result
         if not listings.empty:
             result.parcels = mls.attach(result.parcels, listings)
+
+    if with_rooftops:
+        report("Loading new multifamily")
+        multifamily, mf_result = assessor.fetch_new_multifamily(
+            use_cache=use_cache,
+            progress=lambda n, _ds: report("Loading new multifamily", n),
+        )
+        result.sources["new_multifamily"] = mf_result
+        result.multifamily = multifamily
+
+        permits_by_area = None
+        if with_permits:
+            permits_by_area, mf_permit_result = permits.fetch_multifamily_permits(
+                use_cache=use_cache
+            )
+            result.sources["multifamily_permits"] = mf_permit_result
+
+        result.rooftops = rooftops_module.summarize_areas(
+            multifamily, permits_by_area=permits_by_area
+        )
+        result.notes.extend(result.rooftops.notes)
+        result.parcels = rooftops_module.attach(result.parcels, result.rooftops)
 
     report("Estimating market value")
     result.parcels, valuation_result = valuation.attach(result.parcels)
@@ -215,6 +240,8 @@ REHAB_DISPLAY_COLUMNS = [
     "estimated_value",
     "value_comp_count",
     "total_value",
+    "area_new_units",
+    "area_units_permitted",
     "never_renovated",
     "excess_parking",
     "below_peer_condition",
@@ -250,6 +277,8 @@ DISPLAY_COLUMNS = [
     "improvement_ratio",
     "zone",
     "toc_tier",
+    "area_new_units",
+    "area_growth_percentile",
     "years_since_permit",
     "mls_listed",
 ]

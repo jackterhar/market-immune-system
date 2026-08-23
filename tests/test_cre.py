@@ -1108,3 +1108,158 @@ def test_budget_filter_on_estimate_differs_from_assessed():
         out.index[out["estimated_value"].between(1e6, 4e6)]
     )
     assert by_assessed != by_estimate
+
+
+# ── Rooftop growth ───────────────────────────────────────────────────────
+
+from cre import rooftops  # noqa: E402
+
+
+def _multifamily_frame() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "parcel_id": [f"M{i}" for i in range(6)],
+            "general_use": ["Residential"] * 6,
+            "units": [40.0, 120.0, 8.0, 3.0, 60.0, 200.0],
+            "year_built": [2021.0, 2023.0, 2019.0, 2022.0, 2024.0, 2020.0],
+            "situs_zip": ["90012", "90012", "90012", "90402", "90402", "91401"],
+            "situs_city": ["LOS ANGELES"] * 3 + ["SANTA MONICA"] * 2 + ["VAN NUYS"],
+            "lat": [34.05] * 6,
+            "lon": [-118.24] * 6,
+        }
+    )
+
+
+def test_new_multifamily_requires_the_unit_floor():
+    mask = rooftops.is_new_multifamily(_multifamily_frame(), roll_year=2025)
+    # The 3-unit parcel is a duplex-scale building, not multifamily supply.
+    assert bool(mask.iloc[3]) is False
+    assert bool(mask.iloc[0]) is True
+
+
+def test_new_multifamily_excludes_old_stock():
+    frame = _multifamily_frame()
+    frame.loc[0, "year_built"] = 1965.0
+    mask = rooftops.is_new_multifamily(frame, roll_year=2025, lookback_years=8)
+    assert bool(mask.iloc[0]) is False
+
+
+def test_new_multifamily_uses_year_built_not_effective_year():
+    """A renovation advances the effective year without adding a rooftop."""
+    frame = _multifamily_frame()
+    frame["effective_year"] = 2024.0
+    frame.loc[0, "year_built"] = 1962.0
+    mask = rooftops.is_new_multifamily(frame, roll_year=2025)
+    assert bool(mask.iloc[0]) is False
+
+
+def test_new_multifamily_without_units_column_returns_false():
+    frame = pd.DataFrame({"year_built": [2022.0], "general_use": ["Residential"]})
+    assert not rooftops.is_new_multifamily(frame).any()
+
+
+def test_summarize_areas_ranks_by_units_delivered():
+    frame = _multifamily_frame()
+    result = rooftops.summarize_areas(
+        frame[rooftops.is_new_multifamily(frame, roll_year=2025)], roll_year=2025
+    )
+    assert result.ok
+    assert result.areas.index[0] == "91401"  # 200 units
+    # 40 + 120 + 8 units across three parcels; 8 clears the five-unit floor.
+    assert result.areas.loc["90012", "units_delivered"] == 168.0
+    assert result.areas.loc["90012", "projects"] == 3
+    assert result.areas["growth_rank"].tolist() == [1, 2, 3]
+
+
+def test_summarize_areas_labels_each_area_with_its_city():
+    frame = _multifamily_frame()
+    result = rooftops.summarize_areas(
+        frame[rooftops.is_new_multifamily(frame, roll_year=2025)], roll_year=2025
+    )
+    assert result.areas.loc["90402", "city"] == "SANTA MONICA"
+
+
+def test_summarize_areas_on_empty_input_explains_itself():
+    result = rooftops.summarize_areas(pd.DataFrame())
+    assert not result.ok
+    assert result.notes
+
+
+def test_permitted_units_are_never_added_to_delivered():
+    """A permit is not a building; conflating them would overstate supply."""
+    frame = _multifamily_frame()
+    permits_by_area = pd.DataFrame(
+        {"units_permitted": [500.0], "permit_projects": [4]}, index=["90012"]
+    )
+    result = rooftops.summarize_areas(
+        frame[rooftops.is_new_multifamily(frame, roll_year=2025)],
+        roll_year=2025,
+        permits_by_area=permits_by_area,
+    )
+    assert result.has_permits
+    assert result.areas.loc["90012", "units_delivered"] == 168.0
+    assert result.areas.loc["90012", "units_permitted"] == 500.0
+    # Ranking still runs on delivered units, so 91401 keeps the top slot.
+    assert result.areas.index[0] == "91401"
+
+
+def test_attach_joins_growth_onto_commercial_parcels():
+    frame = _multifamily_frame()
+    result = rooftops.summarize_areas(
+        frame[rooftops.is_new_multifamily(frame, roll_year=2025)], roll_year=2025
+    )
+    commercial = pd.DataFrame(
+        {"parcel_id": ["c1", "c2"], "situs_zip": ["90012", "99999"]}
+    )
+    out = rooftops.attach(commercial, result)
+    assert out.loc[0, "area_new_units"] == 168.0
+    # An area with no new multifamily is at the bottom, not unknown: the
+    # underlying pull is countywide.
+    assert out.loc[1, "area_new_units"] == 0.0
+    assert out.loc[1, "area_growth_percentile"] == 0.0
+
+
+def test_attach_with_failed_rooftop_load_leaves_nulls():
+    """A failed pull must stay distinguishable from genuine zero growth."""
+    commercial = pd.DataFrame({"parcel_id": ["c1"], "situs_zip": ["90012"]})
+    out = rooftops.attach(commercial, rooftops.summarize_areas(pd.DataFrame()))
+    assert out["area_new_units"].isna().all()
+    assert out["area_growth_percentile"].isna().all()
+
+
+def test_resolve_area_key_prefers_zip_then_falls_back():
+    assert rooftops.resolve_area_key(
+        pd.DataFrame({"situs_zip": ["90012"], "situs_city": ["LA"]})
+    ) == "situs_zip"
+    assert rooftops.resolve_area_key(
+        pd.DataFrame({"situs_zip": [None], "situs_city": ["LA"]})
+    ) == "situs_city"
+
+
+def test_blank_area_labels_do_not_form_a_group():
+    frame = _multifamily_frame()
+    frame.loc[0, "situs_zip"] = "   "
+    result = rooftops.summarize_areas(
+        frame[rooftops.is_new_multifamily(frame, roll_year=2025)], roll_year=2025
+    )
+    assert "" not in result.areas.index
+    assert "   " not in result.areas.index
+
+
+def test_demo_multifamily_clusters_rather_than_spreading_evenly():
+    """Uniform growth across every ZIP would make the whole lens pointless."""
+    from cre import demo
+
+    result = rooftops.summarize_areas(demo.generate_multifamily(500))
+    units = result.areas["units_delivered"]
+    assert units.iloc[0] > units.median() * 3
+
+
+def test_demo_multifamily_shares_zips_with_commercial_parcels():
+    """Without shared ZIPs the area join silently matches nothing."""
+    from cre import demo
+
+    commercial = demo.generate(1500)
+    result = rooftops.summarize_areas(demo.generate_multifamily(400))
+    joined = rooftops.attach(commercial, result)
+    assert joined["area_new_units"].gt(0).any()

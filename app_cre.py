@@ -24,11 +24,12 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from cre import cache, config, demo, pipeline, scoring, valuation  # noqa: E402
+from cre import cache, config, demo, pipeline, rooftops, scoring, valuation  # noqa: E402
 from cre.sources import mls  # noqa: E402
 
 st.set_page_config(
@@ -174,8 +175,15 @@ def load_data(settings: dict) -> pipeline.PipelineResult:
     """Run the pipeline, streaming progress into the sidebar."""
     if settings["demo"]:
         parcels = demo.generate(settings["demo_rows"])
+        multifamily = demo.generate_multifamily(
+            max(120, settings["demo_rows"] // 7)
+        )
+        rooftop_result = rooftops.summarize_areas(multifamily)
+        parcels = rooftops.attach(parcels, rooftop_result)
         parcels, valuation_result = valuation.attach(parcels)
         result = pipeline.PipelineResult(parcels=parcels)
+        result.rooftops = rooftop_result
+        result.multifamily = multifamily
         result.acquisition = scoring.acquisition_score(parcels)
         result.development = scoring.development_score(parcels)
         parcels["acquisition_score"] = result.acquisition.scores
@@ -189,6 +197,7 @@ def load_data(settings: dict) -> pipeline.PipelineResult:
         result.notes = (
             ["Demo data — synthetic parcels, not real records."]
             + valuation_result.notes
+            + rooftop_result.notes
             + notes
         )
         return result
@@ -415,6 +424,12 @@ def score_table(
             "years_since_permit": st.column_config.NumberColumn(
                 "Permit gap (yr)", format="%.1f"
             ),
+            "area_new_units": st.column_config.NumberColumn(
+                "New units nearby", format="%,d"
+            ),
+            "area_growth_percentile": st.column_config.NumberColumn(
+                "Growth pct", format="%.0%%"
+            ),
         },
     )
     st.download_button(
@@ -546,6 +561,14 @@ def rehab_table(frame: pd.DataFrame) -> None:
                 "Comps", format="%d", help="Transfers behind the estimate. Fewer means less reliable."
             ),
             "total_value": st.column_config.NumberColumn("Assessed", format="$%,d"),
+            "area_new_units": st.column_config.NumberColumn(
+                "New units nearby",
+                format="%,d",
+                help="Multifamily units delivered in this ZIP in recent years.",
+            ),
+            "area_units_permitted": st.column_config.NumberColumn(
+                "Units permitted", format="%,d", help="City of LA only. Not yet built."
+            ),
             "never_renovated": st.column_config.CheckboxColumn("Never reno"),
             "excess_parking": st.column_config.CheckboxColumn("Excess parking"),
             "below_peer_condition": st.column_config.CheckboxColumn("Below peer"),
@@ -640,6 +663,28 @@ def render_rehab(frame: pd.DataFrame) -> None:
     threshold = st.slider("Minimum rehab score", 0, 100, 65, key="thr_rehab")
     subset = subset[subset["rehab_score"] >= threshold]
 
+    # The rooftop link: a repositioning needs customers to reposition toward.
+    if "area_new_units" in subset.columns and subset["area_new_units"].notna().any():
+        max_units = int(pd.to_numeric(subset["area_new_units"], errors="coerce").max())
+        if max_units > 0:
+            min_rooftops = st.slider(
+                "Minimum new apartment units in the area",
+                0,
+                max_units,
+                0,
+                step=max(1, max_units // 50),
+                key="thr_rooftops",
+                help=(
+                    "Multifamily delivered nearby in recent years. Retail follows "
+                    "rooftops — see the Rooftop growth tab."
+                ),
+            )
+            if min_rooftops > 0:
+                subset = subset[
+                    pd.to_numeric(subset["area_new_units"], errors="coerce").fillna(0)
+                    >= min_rooftops
+                ]
+
     metric_columns = st.columns(5)
     metric_columns[0].metric("Centers", f"{len(subset):,}")
     if "never_renovated" in subset.columns:
@@ -699,6 +744,195 @@ def render_rehab(frame: pd.DataFrame) -> None:
         "for. Any basis or cap-rate math built on these figures would be wrong.",
         icon="⚠️",
     )
+
+
+ROOFTOP_HELP = (
+    "**Retail follows rooftops.** A tired center on a corridor absorbing several "
+    "hundred new apartments has an incoming customer base its current owner is "
+    "not serving. The same center where nothing is being built does not. This "
+    "tab measures where multifamily is actually landing, by ZIP.\n\n"
+    "*Delivered* units come from the assessor roll — five or more units with a "
+    "recent year built — and cover the whole county. *Permitted* units come "
+    "from City of LA permits and are softer: a permit may lapse, get amended, "
+    "or never break ground. The two are shown side by side and never summed."
+)
+
+
+def render_rooftops(
+    frame: pd.DataFrame, result: pipeline.PipelineResult
+) -> None:
+    st.info(ROOFTOP_HELP)
+
+    rooftop_result = result.rooftops
+    if rooftop_result is None or not rooftop_result.ok:
+        st.warning(
+            "No rooftop growth data loaded. New multifamily is fetched with a "
+            "separate query, since residential is excluded from the main "
+            "commercial pull."
+        )
+        if rooftop_result is not None:
+            for note in rooftop_result.notes:
+                st.caption(f"· {note}")
+        return
+
+    areas = rooftop_result.areas
+    multifamily = result.multifamily
+
+    metric_columns = st.columns(4)
+    metric_columns[0].metric(
+        "Units delivered", f"{int(areas['units_delivered'].sum()):,}"
+    )
+    metric_columns[1].metric("Projects", f"{int(areas['projects'].sum()):,}")
+    metric_columns[2].metric("Areas with growth", f"{len(areas):,}")
+    if not areas.empty:
+        top = areas.index[0]
+        metric_columns[3].metric(
+            "Busiest area",
+            str(top),
+            help=f"{int(areas.iloc[0]['units_delivered']):,} units delivered.",
+        )
+    if rooftop_result.has_permits and "units_permitted" in areas.columns:
+        permitted = areas["units_permitted"].sum()
+        if pd.notna(permitted) and permitted > 0:
+            st.caption(
+                f"Plus {int(permitted):,} units permitted but not yet counted as "
+                "delivered — City of LA only."
+            )
+
+    for note in rooftop_result.notes:
+        st.caption(f"· {note}")
+
+    top_n = st.slider("Areas to show", 5, min(100, max(5, len(areas))), min(25, len(areas)))
+    shown = areas.head(top_n).reset_index()
+
+    display_columns = [
+        rooftop_result.area_key,
+        "city",
+        "units_delivered",
+        "projects",
+        "largest_project",
+        "units_per_year",
+        "median_year_built",
+    ]
+    if "units_permitted" in shown.columns:
+        display_columns.insert(4, "units_permitted")
+    if "permit_projects" in shown.columns:
+        display_columns.insert(5, "permit_projects")
+    display_columns = [c for c in display_columns if c in shown.columns]
+
+    st.dataframe(
+        shown[display_columns],
+        width="stretch",
+        hide_index=True,
+        column_config={
+            rooftop_result.area_key: st.column_config.TextColumn("ZIP", width="small"),
+            "city": st.column_config.TextColumn("City", width="small"),
+            "units_delivered": st.column_config.NumberColumn(
+                "Units built", format="%,d"
+            ),
+            "units_permitted": st.column_config.NumberColumn(
+                "Units permitted",
+                format="%,d",
+                help="City of LA only. Not added to units built — a permit is not a building.",
+            ),
+            "permit_projects": st.column_config.NumberColumn("Permits", format="%d"),
+            "projects": st.column_config.NumberColumn("Projects", format="%d"),
+            "largest_project": st.column_config.NumberColumn(
+                "Largest", format="%,d", help="Units in the biggest single project."
+            ),
+            "units_per_year": st.column_config.NumberColumn(
+                "Units/yr", format="%.0f"
+            ),
+            "median_year_built": st.column_config.NumberColumn(
+                "Median year", format="%d"
+            ),
+        },
+    )
+    st.download_button(
+        "Download areas as CSV",
+        shown[display_columns].to_csv(index=False).encode(),
+        file_name="la_rooftop_growth_by_area.csv",
+        mime="text/csv",
+        key="download_rooftops",
+    )
+
+    if {"lat", "lon"}.issubset(areas.columns):
+        mappable = areas.dropna(subset=["lat", "lon"]).head(top_n).copy()
+        if not mappable.empty:
+            units = mappable["units_delivered"].astype(float)
+            span = max(float(units.max()), 1.0)
+            mappable["radius"] = (units / span).pow(0.5) * 900 + 120
+            mappable["color"] = "#4fd1c5"
+            st.map(
+                mappable, latitude="lat", longitude="lon",
+                color="color", size="radius",
+            )
+            st.caption("Circle size tracks units delivered in each area.")
+
+    if not multifamily.empty and "year_built" in multifamily.columns:
+        st.subheader("Delivery by year")
+        by_year = (
+            multifamily.assign(
+                year=pd.to_numeric(multifamily["year_built"], errors="coerce")
+            )
+            .dropna(subset=["year"])
+            .groupby("year")["units"]
+            .sum()
+            .reset_index()
+        )
+        if not by_year.empty:
+            # Plotly rather than st.bar_chart: the built-in chart inferred a
+            # y-domain running into the negatives here and drew the bars
+            # floating above the axis. An explicit figure is not worth arguing
+            # with a heuristic over.
+            by_year["year"] = by_year["year"].astype(int)
+            figure = go.Figure(
+                go.Bar(
+                    x=by_year["year"],
+                    y=by_year["units"],
+                    marker_color="#4fd1c5",
+                    hovertemplate="%{x}: %{y:,.0f} units<extra></extra>",
+                )
+            )
+            figure.update_layout(
+                height=300,
+                margin=dict(l=0, r=0, t=10, b=0),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                font_color="#e6e9ef",
+                xaxis=dict(title="Year built", dtick=1, showgrid=False),
+                yaxis=dict(
+                    title="Units delivered",
+                    rangemode="tozero",
+                    gridcolor="#2a3040",
+                ),
+            )
+            st.plotly_chart(figure, width="stretch")
+
+    st.subheader("Commercial parcels in the busiest areas")
+    if "area_new_units" not in frame.columns:
+        st.caption("Growth has not been joined onto the commercial parcel set.")
+        return
+
+    top_areas = set(areas.head(top_n).index.astype(str))
+    keys = frame.get(rooftop_result.area_key)
+    if keys is None:
+        st.caption(f"Commercial parcels carry no {rooftop_result.area_key} column.")
+        return
+
+    in_growth = frame[keys.astype("string").str.strip().isin(top_areas)]
+    st.caption(
+        f"{len(in_growth):,} of the {len(frame):,} filtered commercial parcels sit "
+        f"in the top {top_n} growth areas."
+    )
+    if in_growth.empty:
+        return
+
+    sort_column = (
+        "rehab_score" if "rehab_score" in in_growth.columns else "acquisition_score"
+    )
+    if sort_column in in_growth.columns:
+        score_table(in_growth, sort_column, key="rooftop_crossref", limit=200)
 
 
 def render_detail(frame: pd.DataFrame, result: pipeline.PipelineResult) -> None:
@@ -888,6 +1122,7 @@ def main() -> None:
             "Off-market",
             "Development sites",
             "Shopping center rehab",
+            "Rooftop growth",
             "Parcel detail",
             "Diagnostics",
         ]
@@ -901,8 +1136,10 @@ def main() -> None:
     with tabs[3]:
         render_rehab(filtered)
     with tabs[4]:
-        render_detail(filtered, result)
+        render_rooftops(filtered, result)
     with tabs[5]:
+        render_detail(filtered, result)
+    with tabs[6]:
         render_diagnostics(result)
 
 
