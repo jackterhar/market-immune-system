@@ -193,6 +193,34 @@ def add_derived_metrics(
     else:
         out["building_age"] = np.nan
 
+    # Renovation history. The assessor advances the *effective* year built when
+    # a property is substantially improved, so the gap between it and the
+    # original year is a direct record of whether the building has ever been
+    # meaningfully renovated. A gap of zero means it has not.
+    if "effective_year" in out.columns and "year_built" in out.columns:
+        out["renovation_gap"] = out["effective_year"] - out["year_built"]
+        out.loc[out["renovation_gap"] < 0, "renovation_gap"] = np.nan
+        last_improved = out[["effective_year", "year_built"]].max(axis=1)
+    elif "year_built" in out.columns:
+        out["renovation_gap"] = np.nan
+        last_improved = out["year_built"]
+    else:
+        out["renovation_gap"] = np.nan
+        last_improved = pd.Series(np.nan, index=out.index, dtype=float)
+
+    out["years_since_improvement"] = year - last_improved
+    out.loc[out["years_since_improvement"] < 0, "years_since_improvement"] = np.nan
+
+    # Assessed value of the structure per square foot. A worn-out building
+    # carries a low figure even where the surrounding land is expensive.
+    if "improvement_value" in out.columns and has_building:
+        out["improvement_per_sqft"] = out["improvement_value"] / out["building_sqft"]
+        out.loc[
+            ~np.isfinite(out["improvement_per_sqft"]), "improvement_per_sqft"
+        ] = np.nan
+    else:
+        out["improvement_per_sqft"] = np.nan
+
     # Share of assessed value in the structure. A low ratio means the value is
     # in the dirt — the classic teardown / underimprovement signature.
     if "improvement_value" in out.columns and has_total:
@@ -244,3 +272,34 @@ def peer_median(
 
     result = result.fillna(global_median)
     return result
+
+
+def location_quality_index(
+    frame: pd.DataFrame, group_keys: list[str] | None = None
+) -> pd.Series:
+    """
+    A submarket land-value index, aligned to ``frame``.
+
+    Each parcel receives the *median* land value per lot square foot of its
+    neighborhood, rather than its own. This matters: under Prop 13 a parcel's
+    land assessment is frozen at its base year, so a long-held site in an
+    excellent location carries a low land value. Using the subject's own figure
+    as a location proxy would systematically rank down exactly the long-tenured
+    parcels a value-add screen is meant to find. A neighborhood median, drawn
+    across parcels of every vintage, does not carry that distortion.
+
+    Returns raw dollars per lot square foot; callers percentile-rank it.
+    """
+    keys = [k for k in (group_keys or config.LOCATION_PEER_KEYS) if k in frame.columns]
+    if "land_value_per_lot_sqft" not in frame.columns:
+        return pd.Series(np.nan, index=frame.index, dtype=float)
+
+    values = pd.to_numeric(frame["land_value_per_lot_sqft"], errors="coerce")
+    if not keys:
+        return pd.Series(values.median(), index=frame.index, dtype=float)
+
+    return peer_median(
+        frame.assign(land_value_per_lot_sqft=values),
+        "land_value_per_lot_sqft",
+        group_keys=keys,
+    )

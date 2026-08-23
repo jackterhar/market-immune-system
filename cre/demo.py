@@ -75,12 +75,31 @@ def generate(n: int = 4000, seed: int = 11) -> pd.DataFrame:
     year_built = rng.integers(1920, 2022, n).astype(float)
     year_built[vacant] = np.nan
 
+    # Most stock has never been substantially improved; the assessor's
+    # effective year built equals the original. About a third has been
+    # renovated at some point since.
+    renovated = rng.random(n) < 0.32
+    effective_year = year_built.copy()
+    for i in np.flatnonzero(renovated & ~vacant):
+        earliest = int(year_built[i]) + 10
+        if earliest < 2024:
+            effective_year[i] = rng.integers(earliest, 2025)
+
     # Assessed value tracks the base year, which is the whole point of the
     # tenure signal: older base years carry structurally lower assessments.
     age_factor = np.interp(base_year, [1975, 2025], [0.22, 1.0])
     land_value = np.round(lot_sqft * rng.uniform(40, 260, n) * age_factor)
     improvement_value = np.round(building_sqft * rng.uniform(60, 320, n) * age_factor)
     improvement_value[vacant] = 0
+
+    # Each city carries a small pool of ZIPs, as real ones do. Random ZIPs per
+    # parcel would leave every peer group below the size floor, collapsing the
+    # location index to a single global median.
+    zip_pools = {
+        city: [f"9{1000 + 37 * index + offset}" for offset in range(4)]
+        for index, city in enumerate(city_names)
+    }
+    zips = np.array([rng.choice(zip_pools[city]) for city in cities])
 
     frame = pd.DataFrame(
         {
@@ -96,10 +115,11 @@ def generate(n: int = 4000, seed: int = 11) -> pd.DataFrame:
                 )
             ],
             "situs_city": cities,
-            "situs_zip": [f"9{rng.integers(1000, 1999)}" for _ in range(n)],
+            "situs_zip": zips,
             "general_use": general,
             "specific_use": specific,
             "year_built": year_built,
+            "effective_year": effective_year,
             "building_sqft": np.where(building_sqft > 0, building_sqft, np.nan),
             "lot_sqft": lot_sqft,
             "land_value": land_value,

@@ -124,10 +124,34 @@ def _combine(
     skipped: list[str] = []
 
     for name, series in components.items():
-        if series is None or pd.to_numeric(series, errors="coerce").notna().sum() == 0:
+        if series is None:
             skipped.append(name)
-        else:
-            usable[name] = pd.to_numeric(series, errors="coerce").fillna(NEUTRAL)
+            continue
+        values = pd.to_numeric(series, errors="coerce")
+        if values.notna().sum() == 0:
+            skipped.append(name)
+            continue
+        usable[name] = values.fillna(NEUTRAL)
+
+    # A component identical across every row cannot rank anything: it would
+    # hold weight while conveying nothing, muting the components that do
+    # discriminate. This happens in practice when a peer group falls below the
+    # size floor and every parcel collapses to the same fallback median.
+    #
+    # Two guards matter here. Variance is measured *after* the neutral fill,
+    # because that is the series actually scored — [1.0, NaN] becomes
+    # [1.0, 0.5], which discriminates fine. And constants are only dropped when
+    # something else can still rank: if every component is flat, they are all
+    # kept, so the frame scores evenly rather than returning nulls.
+    if len(index) > 1:
+        varying = {
+            name: values
+            for name, values in usable.items()
+            if values.nunique(dropna=True) > 1
+        }
+        if varying:
+            skipped.extend(name for name in usable if name not in varying)
+            usable = varying
 
     if not usable:
         return ScoreResult(
@@ -149,7 +173,8 @@ def _combine(
         notes.append(
             "Scored without "
             + ", ".join(sorted(skipped))
-            + " (no data available); remaining weights were renormalized."
+            + " (no data, or no variation across this set); remaining weights "
+            "were renormalized."
         )
 
     return ScoreResult(
@@ -342,3 +367,185 @@ def explain(frame: pd.DataFrame, row_index: Any, components: pd.DataFrame) -> li
         reasons.append(f"Zoned {zone}{far_text}.")
 
     return reasons
+
+
+def band_score(
+    series: pd.Series, low: float, sweet_low: float, sweet_high: float, high: float
+) -> pd.Series:
+    """
+    Score a value by where it falls in a preferred band, in [0, 1].
+
+    Flat at 1.0 across the sweet spot, ramping in from ``low`` and tapering out
+    to ``high``, zero beyond either end. Percentile ranking cannot express this:
+    for rehab scale, bigger is not monotonically better — a 400,000 sqft
+    regional mall is a worse fit than a 60,000 sqft neighborhood center, and a
+    ranking would put the mall on top.
+    """
+    values = pd.to_numeric(series, errors="coerce")
+    score = pd.Series(np.nan, index=series.index, dtype=float)
+
+    below = values < low
+    ramp_up = (values >= low) & (values < sweet_low)
+    plateau = (values >= sweet_low) & (values <= sweet_high)
+    ramp_down = (values > sweet_high) & (values <= high)
+    above = values > high
+
+    score[below] = 0.0
+    score[above] = 0.0
+    score[plateau] = 1.0
+    if sweet_low > low:
+        score[ramp_up] = (values[ramp_up] - low) / (sweet_low - low)
+    else:
+        score[ramp_up] = 1.0
+    if high > sweet_high:
+        score[ramp_down] = (high - values[ramp_down]) / (high - sweet_high)
+    else:
+        score[ramp_down] = 1.0
+
+    return score
+
+
+def is_retail_use(use_description: Any) -> bool:
+    """True when an assessor use description reads as retail."""
+    if not isinstance(use_description, str) or not use_description.strip():
+        return False
+    lowered = use_description.lower()
+    return any(keyword in lowered for keyword in config.RETAIL_USE_KEYWORDS)
+
+
+def shopping_center_candidates(
+    frame: pd.DataFrame,
+    min_lot_sqft: float | None = None,
+    min_building_sqft: float | None = None,
+    max_building_sqft: float | None = None,
+) -> pd.DataFrame:
+    """
+    Narrow a parcel set to plausible shopping centers.
+
+    Retail use plus size gates. The gates do most of the work: the assessor
+    codes a corner liquor store and a 90,000 sqft neighborhood center under the
+    same "Store" description, and only the second is a repositioning candidate.
+    """
+    min_lot = config.REHAB_MIN_LOT_SQFT if min_lot_sqft is None else min_lot_sqft
+    min_building = (
+        config.REHAB_MIN_BUILDING_SQFT if min_building_sqft is None else min_building_sqft
+    )
+    max_building = (
+        config.REHAB_MAX_BUILDING_SQFT if max_building_sqft is None else max_building_sqft
+    )
+
+    mask = pd.Series(True, index=frame.index)
+
+    if "specific_use" in frame.columns:
+        retail = frame["specific_use"].map(is_retail_use)
+        # Fall back to the general use type when the specific one is unavailable.
+        if not retail.any() and "general_use" in frame.columns:
+            retail = frame["general_use"].map(is_retail_use)
+        mask &= retail.fillna(False)
+
+    if "lot_sqft" in frame.columns:
+        mask &= pd.to_numeric(frame["lot_sqft"], errors="coerce") >= min_lot
+    if "building_sqft" in frame.columns:
+        building = pd.to_numeric(frame["building_sqft"], errors="coerce")
+        mask &= building.between(min_building, max_building)
+
+    return frame[mask.fillna(False)]
+
+
+def rehab_score(
+    frame: pd.DataFrame, weights: config.RehabWeights | None = None
+) -> ScoreResult:
+    """
+    Rank retail centers as renovate-and-sell candidates.
+
+    Deliberately inverted from ``acquisition_score`` on the value dimension.
+    That score rewards a cheap parcel; this one rewards a *worn-out building on
+    expensive land*. Cheap dirt under a tired center is not a repositioning
+    opportunity — it means the corridor will not carry the better tenants the
+    whole thesis depends on.
+    """
+    weights = weights or config.REHAB_WEIGHTS
+    index = frame.index
+
+    # Physical obsolescence: how old the structure is.
+    obsolescence = percentile_rank(frame.get("building_age", pd.Series(dtype=float)))
+
+    # How long since anything substantial was done to it. The assessor's
+    # effective year built already folds renovations in, so a long gap here
+    # means dated finishes, systems and layout — the "outdated facilities" case.
+    dormancy_parts: list[pd.Series] = []
+    if "years_since_improvement" in frame.columns:
+        dormancy_parts.append(percentile_rank(frame["years_since_improvement"]))
+    if "years_since_permit" in frame.columns:
+        permit_gap = percentile_rank(frame["years_since_permit"])
+        if permit_gap.notna().any():
+            dormancy_parts.append(permit_gap)
+    if dormancy_parts:
+        dormancy = pd.concat(dormancy_parts, axis=1).mean(axis=1)
+    else:
+        dormancy = pd.Series(np.nan, index=index, dtype=float)
+
+    # Location quality from submarket land values, not the subject's own frozen
+    # assessment. See transform.location_quality_index for why that matters.
+    location = percentile_rank(transform.location_quality_index(frame))
+
+    under_management = percentile_rank(frame.get("tenure_years", pd.Series(dtype=float)))
+
+    scale = (
+        band_score(
+            frame["building_sqft"],
+            config.REHAB_MIN_BUILDING_SQFT,
+            config.REHAB_SWEET_SPOT_SQFT[0],
+            config.REHAB_SWEET_SPOT_SQFT[1],
+            config.REHAB_MAX_BUILDING_SQFT,
+        )
+        if "building_sqft" in frame.columns
+        else pd.Series(np.nan, index=index, dtype=float)
+    )
+
+    components = {
+        "obsolescence": obsolescence,
+        "renovation_dormancy": dormancy,
+        "location_quality": location,
+        "under_management": under_management,
+        "rehab_scale": scale,
+    }
+    weight_map = {
+        "obsolescence": weights.obsolescence,
+        "renovation_dormancy": weights.renovation_dormancy,
+        "location_quality": weights.location_quality,
+        "under_management": weights.under_management,
+        "rehab_scale": weights.rehab_scale,
+    }
+    result = _combine(components, weight_map, index)
+    result.notes.append(
+        "Location is scored from submarket land values rather than each "
+        "parcel's own assessment, which Prop 13 freezes at its base year."
+    )
+    return result
+
+
+def rehab_flags(frame: pd.DataFrame) -> pd.DataFrame:
+    """
+    Plain-language condition flags for a retail center.
+
+    These are observations, not scores — the things you would want to know
+    before deciding whether a site is worth a drive-by.
+    """
+    out = pd.DataFrame(index=frame.index)
+
+    if "renovation_gap" in frame.columns:
+        out["never_renovated"] = frame["renovation_gap"].fillna(0).eq(0)
+    if "built_far" in frame.columns:
+        out["excess_parking"] = pd.to_numeric(
+            frame["built_far"], errors="coerce"
+        ) < config.REHAB_LOW_COVERAGE_THRESHOLD
+    if "improvement_per_sqft" in frame.columns:
+        peer = transform.peer_median(frame, "improvement_per_sqft")
+        out["below_peer_condition"] = (
+            pd.to_numeric(frame["improvement_per_sqft"], errors="coerce") < peer * 0.6
+        )
+    if "mls_listed" in frame.columns:
+        out["already_listed"] = frame["mls_listed"].fillna(False).astype(bool)
+
+    return out.fillna(False)

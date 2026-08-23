@@ -300,7 +300,7 @@ def render_map(frame: pd.DataFrame, score_column: str) -> None:
     st.map(plot, latitude="lat", longitude="lon", color="color", size="radius")
     st.caption(
         f"Showing the top {len(plot):,} parcels by {score_column.replace('_', ' ')}. "
-        "Colour runs red (low) to green (high); circle size tracks lot area."
+        "Color runs red (low) to green (high); circle size tracks lot area."
     )
 
 
@@ -412,6 +412,199 @@ def render_lens(
     st.caption(f"{len(subset):,} of {len(frame):,} parcels at or above {threshold}.")
     render_map(subset, score_column)
     score_table(subset, score_column, key=f"lens_{help_key}")
+
+
+REHAB_HELP = (
+    "Finds **tired retail centers on corridors that can carry better tenants** — "
+    "the renovate, re-tenant and sell play. Ranks on building age, years since "
+    "any substantial improvement, submarket land values, ownership tenure, and "
+    "whether the center is a workable size.\n\n"
+    "Note the inversion: unlike the off-market score, this one wants *expensive "
+    "dirt under a worn-out building*. Cheap land beneath a tired center is not a "
+    "repositioning — it means the corridor will not support the tenants the "
+    "whole thesis depends on. Location is measured from submarket land values "
+    "rather than each parcel's own assessment, which Prop 13 freezes at its "
+    "base year."
+)
+
+
+def rehab_table(frame: pd.DataFrame) -> None:
+    display = pipeline.rehab_display_frame(frame).sort_values(
+        "rehab_score", ascending=False, na_position="last"
+    )
+    st.dataframe(
+        display.head(500),
+        width="stretch",
+        hide_index=True,
+        column_config={
+            "parcel_id": st.column_config.TextColumn("APN", width="small"),
+            "situs_address": st.column_config.TextColumn("Address", width="medium"),
+            "situs_city": st.column_config.TextColumn("City", width="small"),
+            "specific_use": st.column_config.TextColumn("Use", width="small"),
+            "rehab_score": st.column_config.ProgressColumn(
+                "Rehab", min_value=0, max_value=100, format="%.0f"
+            ),
+            "building_sqft": st.column_config.NumberColumn("Bldg sqft", format="%,d"),
+            "lot_sqft": st.column_config.NumberColumn("Lot sqft", format="%,d"),
+            "built_far": st.column_config.NumberColumn("Coverage", format="%.2f"),
+            "year_built": st.column_config.NumberColumn("Built", format="%d"),
+            "building_age": st.column_config.NumberColumn("Age (yr)", format="%.0f"),
+            "renovation_gap": st.column_config.NumberColumn(
+                "Reno (yr)",
+                format="%.0f",
+                help="Years the assessor added to the effective year built. 0 = never substantially improved.",
+            ),
+            "years_since_improvement": st.column_config.NumberColumn(
+                "Since reno", format="%.0f"
+            ),
+            "improvement_per_sqft": st.column_config.NumberColumn(
+                "Imp $/sqft",
+                format="$%.0f",
+                help="Assessed value of the structure per square foot. Low means a worn-out building.",
+            ),
+            "tenure_years": st.column_config.NumberColumn("Tenure (yr)", format="%.0f"),
+            "total_value": st.column_config.NumberColumn("Assessed", format="$%,d"),
+            "never_renovated": st.column_config.CheckboxColumn("Never reno"),
+            "excess_parking": st.column_config.CheckboxColumn("Excess parking"),
+            "below_peer_condition": st.column_config.CheckboxColumn("Below peer"),
+            "years_since_permit": st.column_config.NumberColumn(
+                "Permit gap", format="%.1f"
+            ),
+            "mls_listed": st.column_config.CheckboxColumn("Listed"),
+        },
+    )
+    st.download_button(
+        "Download this list as CSV",
+        display.to_csv(index=False).encode(),
+        file_name="la_cre_shopping_center_rehab.csv",
+        mime="text/csv",
+        key="download_rehab",
+    )
+
+
+def render_rehab(frame: pd.DataFrame) -> None:
+    st.info(REHAB_HELP)
+
+    with st.expander("What counts as a shopping center", expanded=False):
+        st.caption(
+            "The assessor codes a corner liquor store and a 90,000 sqft "
+            "neighborhood center under the same description, so size gates do "
+            "most of the filtering. Widen them to cast a broader net."
+        )
+        gate_columns = st.columns(3)
+        min_lot = gate_columns[0].number_input(
+            "Min lot sqft", 1_000, 500_000, config.REHAB_MIN_LOT_SQFT, step=5_000
+        )
+        min_building = gate_columns[1].number_input(
+            "Min building sqft", 1_000, 200_000, config.REHAB_MIN_BUILDING_SQFT, step=1_000
+        )
+        max_building = gate_columns[2].number_input(
+            "Max building sqft", 10_000, 1_000_000, config.REHAB_MAX_BUILDING_SQFT, step=10_000
+        )
+
+    candidates, score_result = pipeline.rehab_candidates(
+        frame,
+        min_lot_sqft=min_lot,
+        min_building_sqft=min_building,
+        max_building_sqft=max_building,
+    )
+
+    if candidates.empty:
+        st.warning(
+            "No shopping centers matched. Try widening the size gates above, or "
+            "clearing the city and use-type filters in the sidebar."
+        )
+        return
+
+    if score_result.used_weights:
+        weights = ", ".join(
+            f"{name.replace('_', ' ')} {weight:.0%}"
+            for name, weight in sorted(
+                score_result.used_weights.items(), key=lambda kv: -kv[1]
+            )
+        )
+        st.caption(f"Active weights — {weights}")
+    for note in score_result.notes:
+        st.caption(f"· {note}")
+
+    flag_columns = st.columns(4)
+    only_never_renovated = flag_columns[0].checkbox(
+        "Never renovated", value=False, help="Effective year built still equals the original."
+    )
+    only_excess_parking = flag_columns[1].checkbox(
+        "Excess parking",
+        value=False,
+        help=f"Building covers under {config.REHAB_LOW_COVERAGE_THRESHOLD:.0%} of the lot — auto-era layout, possible pad site.",
+    )
+    only_below_peer = flag_columns[2].checkbox(
+        "Below-peer condition",
+        value=False,
+        help="Structure assessed well under comparable centers per square foot.",
+    )
+    hide_listed = flag_columns[3].checkbox(
+        "Hide listed", value=True, help="Exclude anything already being marketed."
+    )
+
+    subset = candidates
+    if only_never_renovated and "never_renovated" in subset.columns:
+        subset = subset[subset["never_renovated"]]
+    if only_excess_parking and "excess_parking" in subset.columns:
+        subset = subset[subset["excess_parking"]]
+    if only_below_peer and "below_peer_condition" in subset.columns:
+        subset = subset[subset["below_peer_condition"]]
+    if hide_listed and "already_listed" in subset.columns:
+        subset = subset[~subset["already_listed"]]
+
+    threshold = st.slider("Minimum rehab score", 0, 100, 65, key="thr_rehab")
+    subset = subset[subset["rehab_score"] >= threshold]
+
+    metric_columns = st.columns(5)
+    metric_columns[0].metric("Centers", f"{len(subset):,}")
+    if "never_renovated" in subset.columns:
+        metric_columns[1].metric("Never renovated", f"{int(subset['never_renovated'].sum()):,}")
+    if "building_age" in subset.columns and subset["building_age"].notna().any():
+        metric_columns[2].metric("Median age", f"{subset['building_age'].median():.0f} yr")
+    if "building_sqft" in subset.columns and subset["building_sqft"].notna().any():
+        metric_columns[3].metric("Median size", f"{subset['building_sqft'].median():,.0f} sqft")
+    if "tenure_years" in subset.columns and subset["tenure_years"].notna().any():
+        metric_columns[4].metric("Median tenure", f"{subset['tenure_years'].median():.0f} yr")
+
+    if subset.empty:
+        st.warning("Nothing left after those filters. Lower the score threshold.")
+        return
+
+    st.caption(
+        f"{len(subset):,} of {len(candidates):,} shopping centers at or above {threshold}."
+    )
+    render_map(subset, "rehab_score")
+    rehab_table(subset)
+
+    st.subheader("Renovation scope")
+    scope_columns = st.columns([1, 2])
+    cost_per_sqft = scope_columns[0].number_input(
+        "Renovation cost $/sqft", 10, 800, 120, step=10,
+        help="Your number. Facade, common areas, parking, signage, systems.",
+    )
+    total_sqft = float(pd.to_numeric(subset["building_sqft"], errors="coerce").sum())
+    with scope_columns[1]:
+        st.metric(
+            f"Construction budget across {len(subset):,} centers",
+            money(total_sqft * cost_per_sqft),
+        )
+        st.caption(
+            f"{total_sqft:,.0f} sqft × ${cost_per_sqft}/sqft. Arithmetic on your "
+            "input, nothing more."
+        )
+
+    st.warning(
+        "**No returns are projected here, deliberately.** Doing that needs in-place "
+        "rents, a rent roll, lease expiries and market pricing — none of which is in "
+        "public assessor data. Assessed value is also *not* market value: Prop 13 "
+        "freezes it at the base year, which is precisely why the long-held centers "
+        "at the top of this list carry assessments far below what they would trade "
+        "for. Any basis or cap-rate math built on these figures would be wrong.",
+        icon="⚠️",
+    )
 
 
 def render_detail(frame: pd.DataFrame, result: pipeline.PipelineResult) -> None:
@@ -592,7 +785,14 @@ def main() -> None:
     )
 
     tabs = st.tabs(
-        ["Screener", "Off-market", "Development sites", "Parcel detail", "Diagnostics"]
+        [
+            "Screener",
+            "Off-market",
+            "Development sites",
+            "Shopping center rehab",
+            "Parcel detail",
+            "Diagnostics",
+        ]
     )
     with tabs[0]:
         render_screener(filtered, result)
@@ -601,8 +801,10 @@ def main() -> None:
     with tabs[2]:
         render_lens(filtered, "development_score", result, "development")
     with tabs[3]:
-        render_detail(filtered, result)
+        render_rehab(filtered)
     with tabs[4]:
+        render_detail(filtered, result)
+    with tabs[5]:
         render_diagnostics(result)
 
 
