@@ -1,6 +1,13 @@
+# Shared
 streamlit>=1.30.0
 pandas>=2.0.0
 numpy>=1.24.0
-yfinance>=0.2.31
 plotly>=5.18.0
 requests>=2.28.0
+
+# Market Immune System (app.py)
+yfinance>=0.2.31
+
+# LA CRE Opportunity Screener (app_cre.py)
+pyarrow>=14.0.0      # parquet cache for the countywide parcel pull
+shapely>=2.0.0       # local point-in-polygon join for LA City zoning

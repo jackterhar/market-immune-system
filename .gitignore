@@ -1,0 +1,13 @@
+# Caches
+.cre_cache/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Credentials — MLS and API tokens must never be committed
+.streamlit/secrets.toml
+.env
+
+# Runtime state written by app.py next to the script
+regime_state.json
+regime_alert_log.csv
