@@ -547,3 +547,384 @@ def test_display_frame_only_returns_present_columns():
     frame = pd.DataFrame({"parcel_id": ["a"], "irrelevant": [1]})
     out = pipeline.display_frame(frame)
     assert list(out.columns) == ["parcel_id"]
+
+
+# ── Band scoring ─────────────────────────────────────────────────────────
+
+
+def test_band_score_plateaus_across_the_sweet_spot():
+    values = pd.Series([15_000.0, 60_000.0, 150_000.0])
+    scored = scoring.band_score(values, 5_000, 15_000, 150_000, 400_000)
+    assert scored.tolist() == [1.0, 1.0, 1.0]
+
+
+def test_band_score_is_zero_outside_the_band():
+    values = pd.Series([1_000.0, 500_000.0])
+    scored = scoring.band_score(values, 5_000, 15_000, 150_000, 400_000)
+    assert scored.tolist() == [0.0, 0.0]
+
+
+def test_band_score_tapers_rather_than_ranking():
+    """A regional mall must not outrank a neighborhood center on scale."""
+    values = pd.Series([60_000.0, 300_000.0])
+    scored = scoring.band_score(values, 5_000, 15_000, 150_000, 400_000)
+    assert scored.iloc[0] > scored.iloc[1]
+
+
+def test_band_score_handles_degenerate_edges():
+    values = pd.Series([10.0, 50.0])
+    scored = scoring.band_score(values, 10, 10, 50, 50)
+    assert scored.notna().all()
+
+
+def test_band_score_preserves_nulls():
+    scored = scoring.band_score(pd.Series([np.nan]), 1, 2, 3, 4)
+    assert scored.isna().all()
+
+
+# ── Retail identification ────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "use,retail",
+    [
+        ("Store", True),
+        ("Shopping Center (Neighborhood)", True),
+        ("Restaurant", True),
+        ("Supermarket", True),
+        ("Warehousing", False),
+        ("Office Building", False),
+        ("Light Manufacturing", False),
+        (None, False),
+        ("", False),
+        (42, False),
+    ],
+)
+def test_is_retail_use(use, retail):
+    assert scoring.is_retail_use(use) is retail
+
+
+def test_shopping_center_gates_exclude_small_storefronts():
+    frame = pd.DataFrame(
+        {
+            "specific_use": ["Store", "Store", "Warehousing"],
+            "lot_sqft": [2_000.0, 40_000.0, 80_000.0],
+            "building_sqft": [1_200.0, 30_000.0, 50_000.0],
+        }
+    )
+    out = scoring.shopping_center_candidates(frame)
+    # Only the mid-size retail parcel survives: the first is too small, the
+    # third is not retail.
+    assert len(out) == 1
+    assert out.index.tolist() == [1]
+
+
+def test_shopping_center_gates_exclude_regional_malls():
+    frame = pd.DataFrame(
+        {
+            "specific_use": ["Shopping Center"],
+            "lot_sqft": [2_000_000.0],
+            "building_sqft": [900_000.0],
+        }
+    )
+    assert scoring.shopping_center_candidates(frame).empty
+
+
+def test_shopping_center_gates_are_overridable():
+    frame = pd.DataFrame(
+        {
+            "specific_use": ["Store"],
+            "lot_sqft": [3_000.0],
+            "building_sqft": [2_000.0],
+        }
+    )
+    assert scoring.shopping_center_candidates(frame).empty
+    widened = scoring.shopping_center_candidates(
+        frame, min_lot_sqft=1_000, min_building_sqft=1_000
+    )
+    assert len(widened) == 1
+
+
+# ── Renovation history ───────────────────────────────────────────────────
+
+
+def test_renovation_gap_detects_never_improved_buildings():
+    frame = pd.DataFrame(
+        {
+            "parcel_id": ["a", "b"],
+            "general_use": ["Commercial"] * 2,
+            "year_built": [1972.0, 1972.0],
+            "effective_year": [1972.0, 2015.0],
+        }
+    )
+    out = transform.add_derived_metrics(frame, roll_year=2025)
+    assert out.loc[0, "renovation_gap"] == 0.0
+    assert out.loc[1, "renovation_gap"] == 43.0
+
+
+def test_years_since_improvement_uses_the_later_of_the_two_years():
+    frame = pd.DataFrame(
+        {
+            "parcel_id": ["a", "b"],
+            "general_use": ["Commercial"] * 2,
+            "year_built": [1972.0, 1972.0],
+            "effective_year": [1972.0, 2015.0],
+        }
+    )
+    out = transform.add_derived_metrics(frame, roll_year=2025)
+    assert out.loc[0, "years_since_improvement"] == 53.0
+    assert out.loc[1, "years_since_improvement"] == 10.0
+
+
+def test_renovation_metrics_degrade_without_effective_year():
+    frame = pd.DataFrame(
+        {
+            "parcel_id": ["a"],
+            "general_use": ["Commercial"],
+            "year_built": [1972.0],
+        }
+    )
+    out = transform.add_derived_metrics(frame, roll_year=2025)
+    assert pd.isna(out.loc[0, "renovation_gap"])
+    assert out.loc[0, "years_since_improvement"] == 53.0
+
+
+# ── Location quality ─────────────────────────────────────────────────────
+
+
+def test_location_index_uses_submarket_median_not_own_assessment():
+    """
+    The whole point: a long-held parcel's own land assessment is frozen by
+    Prop 13, so a great location can look cheap. The index must reflect the
+    neighborhood, not the subject.
+    """
+    frame = pd.DataFrame(
+        {
+            "situs_zip": ["90402"] * 10,
+            "situs_city": ["SANTA MONICA"] * 10,
+            # One long-held parcel assessed far below its neighbors.
+            "land_value_per_lot_sqft": [30.0] + [500.0] * 9,
+        }
+    )
+    index = transform.location_quality_index(frame)
+    # The under-assessed parcel inherits its neighborhood's value, not its own.
+    assert index.iloc[0] > 100.0
+    assert index.iloc[0] == index.iloc[1]
+
+
+def test_location_index_without_land_values_returns_nulls():
+    frame = pd.DataFrame({"situs_zip": ["90001"]})
+    assert transform.location_quality_index(frame).isna().all()
+
+
+# ── Rehab scoring ────────────────────────────────────────────────────────
+
+
+def _retail_frame(n: int = 60) -> pd.DataFrame:
+    rng = np.random.default_rng(3)
+    frame = pd.DataFrame(
+        {
+            "parcel_id": [f"{i:010d}" for i in range(n)],
+            "general_use": ["Commercial"] * n,
+            "specific_use": ["Shopping Center"] * n,
+            "situs_city": ["LOS ANGELES"] * n,
+            "situs_zip": rng.choice(["90001", "90210", "91401"], n),
+            "building_sqft": rng.integers(8_000, 200_000, n).astype(float),
+            "lot_sqft": rng.integers(20_000, 500_000, n).astype(float),
+            "year_built": rng.integers(1950, 2015, n).astype(float),
+            "effective_year": rng.integers(1950, 2020, n).astype(float),
+            "land_value": rng.integers(500_000, 20_000_000, n).astype(float),
+            "improvement_value": rng.integers(100_000, 9_000_000, n).astype(float),
+            "total_value": rng.integers(1_000_000, 30_000_000, n).astype(float),
+            "land_base_year": rng.integers(1975, 2024, n).astype(float),
+            "imp_base_year": rng.integers(1975, 2024, n).astype(float),
+        }
+    )
+    frame["effective_year"] = frame[["effective_year", "year_built"]].max(axis=1)
+    return transform.add_derived_metrics(frame, roll_year=2025)
+
+
+def test_rehab_scores_are_bounded_and_discriminate():
+    result = scoring.rehab_score(_retail_frame())
+    assert result.scores.between(0, 100).all()
+    assert result.scores.nunique() > 1
+
+
+def test_rehab_rewards_expensive_land_under_a_tired_building():
+    """
+    The inversion that separates this from the acquisition score: identical
+    worn-out centers, one neighborhood on expensive dirt, one on cheap. The
+    expensive one must rank higher — cheap land means the corridor cannot carry
+    the tenants the whole thesis depends on.
+
+    Each neighborhood needs enough parcels to clear the peer-group floor;
+    below it the location index falls back to a global median and stops
+    discriminating, which is correct behavior but untestable at n=2.
+    """
+    per_zip = config.MIN_PEER_GROUP_SIZE + 2
+    rows = []
+    for zip_code, city, land_psf in (
+        ("90001", "LOS ANGELES", 10.0),
+        ("90402", "SANTA MONICA", 400.0),
+    ):
+        for i in range(per_zip):
+            rows.append(
+                {
+                    "parcel_id": f"{zip_code}{i:04d}",
+                    "general_use": "Commercial",
+                    "specific_use": "Shopping Center",
+                    "situs_city": city,
+                    "situs_zip": zip_code,
+                    "building_sqft": 50_000.0,
+                    "lot_sqft": 200_000.0,
+                    "year_built": 1968.0,
+                    "effective_year": 1968.0,
+                    "land_value": land_psf * 200_000.0,
+                    "improvement_value": 1_000_000.0,
+                    "total_value": land_psf * 200_000.0 + 1_000_000.0,
+                    "land_base_year": 1980.0,
+                    "imp_base_year": 1980.0,
+                }
+            )
+    enriched = transform.add_derived_metrics(pd.DataFrame(rows), roll_year=2025)
+    scores = scoring.rehab_score(enriched).scores
+
+    cheap = scores.iloc[:per_zip].mean()
+    expensive = scores.iloc[per_zip:].mean()
+    assert expensive > cheap
+
+
+def test_constant_components_are_dropped_not_diluted():
+    """
+    A component identical for every row conveys no ranking information. It must
+    be skipped and its weight redistributed, otherwise it drags every score
+    toward the middle and mutes the components that do discriminate.
+    """
+    index = pd.RangeIndex(4)
+    components = {
+        "varies": pd.Series([0.0, 0.33, 0.67, 1.0], index=index),
+        "constant": pd.Series([0.5] * 4, index=index),
+    }
+    result = scoring._combine(components, {"varies": 0.5, "constant": 0.5}, index)
+    assert result.skipped == ["constant"]
+    assert result.used_weights == {"varies": 1.0}
+    # With the constant dropped, the spread is full rather than halved.
+    assert result.scores.iloc[0] == 0.0
+    assert result.scores.iloc[3] == 100.0
+
+
+def test_single_row_keeps_constant_components():
+    """A one-row frame is constant by definition; it must still score."""
+    index = pd.RangeIndex(1)
+    result = scoring._combine(
+        {"a": pd.Series([1.0], index=index)}, {"a": 1.0}, index
+    )
+    assert result.scores.notna().all()
+
+
+def test_rehab_flags_identify_never_renovated_and_excess_parking():
+    frame = pd.DataFrame(
+        {
+            "parcel_id": ["a", "b"],
+            "general_use": ["Commercial"] * 2,
+            "specific_use": ["Shopping Center"] * 2,
+            "situs_city": ["LOS ANGELES"] * 2,
+            "renovation_gap": [0.0, 30.0],
+            "built_far": [0.18, 0.90],
+            "improvement_per_sqft": [10.0, 200.0],
+        }
+    )
+    flags = scoring.rehab_flags(frame)
+    assert bool(flags.loc[0, "never_renovated"]) is True
+    assert bool(flags.loc[1, "never_renovated"]) is False
+    assert bool(flags.loc[0, "excess_parking"]) is True
+    assert bool(flags.loc[1, "excess_parking"]) is False
+
+
+def test_rehab_survives_a_single_candidate():
+    frame = _retail_frame(1)
+    assert scoring.rehab_score(frame).scores.notna().all()
+
+
+def test_rehab_candidates_scores_after_filtering():
+    """
+    Percentiles must be computed within the retail set, so the top-ranked
+    center scores near 100 even when it is unremarkable countywide.
+    """
+    parcels = pd.concat([_retail_frame(30), _retail_frame(30)], ignore_index=True)
+    parcels.loc[:29, "specific_use"] = "Warehousing"
+    candidates, result = pipeline.rehab_candidates(parcels)
+    assert not candidates.empty
+    assert (candidates["specific_use"] == "Shopping Center").all()
+    assert candidates["rehab_score"].max() > 70
+
+
+def test_rehab_candidates_with_no_matches_returns_empty_not_error():
+    frame = pd.DataFrame(
+        {
+            "specific_use": ["Warehousing"],
+            "lot_sqft": [50_000.0],
+            "building_sqft": [30_000.0],
+        }
+    )
+    candidates, result = pipeline.rehab_candidates(frame)
+    assert candidates.empty
+    assert result.notes
+
+
+def test_rehab_weights_sum_to_one():
+    assert sum(vars(config.REHAB_WEIGHTS).values()) == pytest.approx(1.0)
+
+
+def test_peer_median_fallback_broadens_with_prefix_ordering():
+    """
+    peer_median walks key *prefixes*, so keys must be ordered broadest-first
+    for the fallback to widen. Ordering them narrowest-first makes every
+    fallback level equally narrow, and thin groups collapse to a global median
+    instead of a city-level one.
+    """
+    frame = pd.DataFrame(
+        {
+            "situs_city": ["SANTA MONICA"] * 10 + ["POMONA"] * 10,
+            # Each ZIP holds 2 parcels — well below the floor — so grouping
+            # must fall back to city, not to the whole frame.
+            "situs_zip": [f"9040{i // 2}" for i in range(10)]
+            + [f"9176{i // 2}" for i in range(10)],
+            "land_value_per_lot_sqft": [500.0] * 10 + [20.0] * 10,
+        }
+    )
+    broad_first = transform.peer_median(
+        frame, "land_value_per_lot_sqft", group_keys=["situs_city", "situs_zip"]
+    )
+    # Santa Monica keeps its own level; it does not collapse toward Pomona.
+    assert broad_first.iloc[0] == pytest.approx(500.0)
+    assert broad_first.iloc[10] == pytest.approx(20.0)
+
+
+def test_location_index_config_is_ordered_broadest_first():
+    assert config.LOCATION_PEER_KEYS[0] == "situs_city"
+
+
+def test_location_index_discriminates_on_demo_data():
+    """Regression: the component was silently dropped for lack of variation."""
+    from cre import demo
+
+    parcels = demo.generate(1500)
+    index = transform.location_quality_index(parcels)
+    assert index.nunique() > 1
+
+
+def test_rehab_uses_every_component_on_demo_data():
+    """All five inputs should contribute; a skipped one means a data problem."""
+    from cre import demo
+
+    candidates, result = pipeline.rehab_candidates(demo.generate(3000))
+    assert not candidates.empty
+    assert result.skipped == []
+    assert set(result.used_weights) == {
+        "obsolescence",
+        "renovation_dormancy",
+        "location_quality",
+        "under_management",
+        "rehab_scale",
+    }

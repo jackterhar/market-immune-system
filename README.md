@@ -67,6 +67,42 @@ Inside the City of LA the ceiling comes from the zone's height district.
 Everywhere else it comes from what comparable neighbors actually built — a
 zoning-free measure, which is what makes countywide coverage possible.
 
+### Shopping center rehab
+
+Ranks retail centers as renovate, re-tenant and sell candidates. Components:
+building age (28%), years since any substantial improvement (22%), submarket
+land values (20%), ownership tenure (15%), and whether the center falls in a
+workable size band (15%).
+
+**This one is deliberately inverted from the off-market score.** There, a low
+assessed value is the signal. Here you want *expensive dirt under a worn-out
+building*. Cheap land beneath a tired center is not a repositioning — it means
+the corridor will not support the better tenants the whole thesis depends on.
+
+Two mechanics are worth knowing:
+
+- **Renovation history comes from the assessor's effective year built**, which
+  advances when a property is substantially improved. A gap of zero against the
+  original year means the building has never been meaningfully renovated —
+  the most direct "outdated facilities" signal in public data.
+- **Location is scored from submarket land values, not the parcel's own.**
+  Prop 13 freezes a parcel's land assessment at its base year, so a long-held
+  site in an excellent location looks cheap. Using its own figure as a location
+  proxy would rank down exactly the long-tenured centers the screen exists to
+  find. The neighborhood median, drawn across parcels of every vintage, does
+  not carry that distortion.
+
+Size gates do most of the filtering, because the assessor codes a corner
+liquor store and a 90,000 sqft neighborhood center under the same description.
+They are adjustable in the tab.
+
+The tab sizes a construction budget from a cost per square foot you supply,
+and **projects no returns at all**. That would need in-place rents, a rent
+roll, lease expiries and market pricing, none of which exist in public assessor
+data — and assessed value is not market value, which is precisely why the
+long-held centers at the top carry assessments far below what they would trade
+for.
+
 ## Data sources and coverage
 
 | Source | Coverage | Auth | Provides |
@@ -137,7 +173,7 @@ cre/
     zoning.py           ArcGIS zoning + TOC, local shapely spatial join
     mls.py              RESO Web API adapter
 scripts/probe_sources.py  Connectivity and schema diagnostics
-tests/                    72 tests, no network required
+tests/                    108 tests, no network required
 ```
 
 ## Tests

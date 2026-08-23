@@ -201,6 +201,68 @@ class DevelopmentWeights:
 ACQUISITION_WEIGHTS = AcquisitionWeights()
 DEVELOPMENT_WEIGHTS = DevelopmentWeights()
 
+@dataclass(frozen=True)
+class RehabWeights:
+    """
+    Weights for the shopping center rehabilitation score.
+
+    The thesis is specific: buy a physically tired retail center on a corridor
+    that can support better tenants, renovate, re-tenant, sell. That makes this
+    score deliberately *unlike* the acquisition score. There, a low assessed
+    value is the signal. Here you want expensive dirt under a worn-out
+    building — a tired center in a weak location is not a value-add play, it is
+    just a bad center.
+    """
+
+    obsolescence: float = 0.28        # building age
+    renovation_dormancy: float = 0.22  # years since any substantial improvement
+    location_quality: float = 0.20     # submarket land values (see note below)
+    under_management: float = 0.15     # ownership tenure
+    rehab_scale: float = 0.15          # building size within a workable band
+
+
+REHAB_WEIGHTS = RehabWeights()
+
+# Retail use types, matched as keywords against the assessor's specific use
+# description so the filter survives wording changes between roll years.
+RETAIL_USE_KEYWORDS = [
+    "store",
+    "shopping",
+    "retail",
+    "market",
+    "restaurant",
+    "strip",
+    "commercial center",
+    "department",
+]
+
+# Size gates defining a shopping center rather than a single storefront.
+# Exposed as sliders in the UI; these are only the defaults.
+REHAB_MIN_LOT_SQFT = 15_000
+REHAB_MIN_BUILDING_SQFT = 5_000
+REHAB_MAX_BUILDING_SQFT = 400_000
+
+# The scale band. Centers below the sweet spot are too small to carry the soft
+# costs of a repositioning; above it you are competing with institutional
+# capital for regional malls.
+REHAB_SWEET_SPOT_SQFT = (15_000, 150_000)
+
+# Surface parking share below which a center reads as auto-era and may have
+# room for a pad building. Coverage = building area / lot area.
+REHAB_LOW_COVERAGE_THRESHOLD = 0.25
+
+# Location quality is measured from the *submarket's* median land value per lot
+# square foot, not the subject parcel's own. Under Prop 13 the subject's land
+# assessment is frozen at its base year, so using it directly would penalize
+# exactly the long-held parcels this score exists to surface. The neighborhood
+# median, drawn across parcels of every vintage, is not distorted that way.
+# Ordered broadest-first on purpose: peer_median walks key *prefixes*, so
+# ["city", "zip"] groups by city+zip and then falls back to city alone. The
+# reverse order would fall back from zip to zip — never widening — and the
+# whole component would collapse to a global median wherever zips are thin.
+LOCATION_PEER_KEYS = ["situs_city", "situs_zip"]
+
+
 # Peer groups for relative comparisons. A parcel is compared against others
 # of the same specific use type in the same city; falls back to county-wide
 # use-type medians when a peer group is too thin to be meaningful.

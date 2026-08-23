@@ -30,7 +30,7 @@ def test_app_runs_without_exception(app: AppTest):
 
 
 def test_app_renders_all_tabs(app: AppTest):
-    assert len(app.tabs) == 5
+    assert len(app.tabs) == 6
 
 
 def test_app_reports_no_errors(app: AppTest):
@@ -47,7 +47,7 @@ def test_screener_metrics_are_populated(app: AppTest):
     assert "Median acquisition" in labels
 
 
-def test_scores_are_percentile_centred(app: AppTest):
+def test_scores_are_percentile_centered(app: AppTest):
     """Percentile scoring should put the median near 50 on a broad sample."""
     labels = {m.label: m.value for m in app.metric}
     median = float(labels["Median acquisition"])

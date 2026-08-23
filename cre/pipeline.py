@@ -149,6 +149,73 @@ def run(
     return result
 
 
+def rehab_candidates(
+    parcels: pd.DataFrame,
+    min_lot_sqft: float | None = None,
+    min_building_sqft: float | None = None,
+    max_building_sqft: float | None = None,
+) -> tuple[pd.DataFrame, scoring.ScoreResult]:
+    """
+    Filter to shopping centers and score them for repositioning.
+
+    Scoring happens *after* filtering on purpose. The components are percentile
+    ranks, so they only mean something relative to a comparable set: a 90 here
+    should mean "in the top decile of retail centers", not "of all parcels in
+    LA County". Scoring first and filtering second would produce the latter.
+    """
+    candidates = scoring.shopping_center_candidates(
+        parcels,
+        min_lot_sqft=min_lot_sqft,
+        min_building_sqft=min_building_sqft,
+        max_building_sqft=max_building_sqft,
+    ).copy()
+
+    if candidates.empty:
+        return candidates, scoring.ScoreResult(
+            scores=pd.Series(dtype=float),
+            components=pd.DataFrame(),
+            notes=["No parcels matched the shopping center filters."],
+        )
+
+    result = scoring.rehab_score(candidates)
+    candidates["rehab_score"] = result.scores
+
+    flags = scoring.rehab_flags(candidates)
+    for column in flags.columns:
+        candidates[column] = flags[column]
+
+    return candidates, result
+
+
+REHAB_DISPLAY_COLUMNS = [
+    "parcel_id",
+    "situs_address",
+    "situs_city",
+    "specific_use",
+    "rehab_score",
+    "building_sqft",
+    "lot_sqft",
+    "built_far",
+    "year_built",
+    "building_age",
+    "renovation_gap",
+    "years_since_improvement",
+    "improvement_per_sqft",
+    "tenure_years",
+    "total_value",
+    "never_renovated",
+    "excess_parking",
+    "below_peer_condition",
+    "years_since_permit",
+    "mls_listed",
+]
+
+
+def rehab_display_frame(candidates: pd.DataFrame) -> pd.DataFrame:
+    columns = [c for c in REHAB_DISPLAY_COLUMNS if c in candidates.columns]
+    return candidates[columns]
+
+
 DISPLAY_COLUMNS = [
     "parcel_id",
     "situs_address",
